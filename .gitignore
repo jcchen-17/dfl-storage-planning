@@ -1,0 +1,35 @@
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments and editor files
+.venv/
+venv/
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+
+# Downloaded and generated datasets
+data/raw/
+data/interim/
+data/processed/
+data/manifests/
+
+# Training and evaluation artifacts
+outputs/
+runs/
+*.pt
+*.pth
+*.ckpt
+
+# Local helper binaries and logs
+curl.exe
+*.log

@@ -1,0 +1,72 @@
+seed: 7
+
+data:
+  dataset_path: data/processed/ieee13_smartds_dfl/dfl_training_windows_120h.npz
+  train_split: train
+  validation_split: validation
+  test_split: test
+  horizon: 12
+  delta_t_hours: 1.0
+
+cvae:
+  latent_dim: 4
+  hidden_dim: 64
+  epochs: 2
+  learning_rate: 0.001
+  beta: 0.005
+  ramp_weight: 0.10
+
+dfl:
+  num_support_scenarios: 1
+  epochs: 1
+  validation_batch_size: 1
+  final_validation_size: 1
+  learning_rate: 0.02
+  baseline_momentum: 0.75
+  initial_exploration_std: 0.30
+  minimum_exploration_std: 0.15
+  exploration_decay: 0.88
+  diversity_margin: 0.80
+  diversity_weight: 0.05
+  weight_entropy_weight: 0.005
+  device: cpu
+
+planning:
+  max_storage_sites: 1
+  initial_soc: 0.20
+  initial_carbon_intensity: 0.28
+  min_soc: 0.10
+  max_soc: 0.90
+  charge_efficiency: 0.95
+  discharge_efficiency: 0.95
+  self_discharge: 0.0
+  min_power_mw: 0.05
+  max_power_mw: 1.20
+  min_energy_mwh: 0.10
+  max_energy_mwh: 3.00
+  min_duration_hours: 1.0
+  max_duration_hours: 4.0
+  grid_limit_mw: 5.0
+  carbon_intensity_max: 1.20
+  dc_carbon_cap: 0.62
+  other_bus_carbon_cap: 1.10
+  carbon_formulation: exact
+  flow_limit_formulation: quadratic
+  solver_time_limit_seconds: 15
+  solver_relative_gap: 0.20
+  solver_threads: 1
+  verbose_solver: false
+
+costs:
+  capital_recovery_factor: 0.12
+  site_dollars: 30000.0
+  power_dollars_per_mw: 110000.0
+  energy_dollars_per_mwh: 85000.0
+  degradation_dollars_per_mwh: 8.0
+  demand_dollars_per_mw_year: 30000.0
+  delay_dollars_per_task_hour: 8.0
+  curtailment_dollars_per_mwh: 4.0
+  shedding_dollars_per_mwh: 10000.0
+  validation_carbon_slack_dollars: 100000.0
+
+output_dir: outputs/smoke_unbalanced
