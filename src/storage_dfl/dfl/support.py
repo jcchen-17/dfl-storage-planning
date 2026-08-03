@@ -16,11 +16,27 @@ class SupportSample:
 class DirectSupportPolicy(nn.Module):
     """A distribution over generated latent support points and their weights."""
 
-    def __init__(self, support_count: int, latent_dim: int, seed: int) -> None:
+    def __init__(
+        self,
+        support_count: int,
+        latent_dim: int,
+        seed: int,
+        initial_latent: torch.Tensor | None = None,
+    ) -> None:
         super().__init__()
-        generator = torch.Generator().manual_seed(seed)
-        initial_latent = 0.35 * torch.randn(support_count, latent_dim, generator=generator)
-        self.latent_location = nn.Parameter(initial_latent)
+        if initial_latent is None:
+            generator = torch.Generator().manual_seed(seed)
+            initial_latent = 0.35 * torch.randn(
+                support_count,
+                latent_dim,
+                generator=generator,
+            )
+        elif tuple(initial_latent.shape) != (support_count, latent_dim):
+            raise ValueError(
+                "initial_latent must have shape "
+                f"({support_count}, {latent_dim}), got {tuple(initial_latent.shape)}"
+            )
+        self.latent_location = nn.Parameter(initial_latent.detach().float().clone())
         self.weight_logit_location = nn.Parameter(torch.zeros(support_count))
 
     def sample(self, exploration_std: float) -> SupportSample:
@@ -28,19 +44,26 @@ class DirectSupportPolicy(nn.Module):
             self.latent_location,
             torch.full_like(self.latent_location, exploration_std),
         )
-        weight_distribution = torch.distributions.Normal(
-            self.weight_logit_location,
-            torch.full_like(self.weight_logit_location, exploration_std),
-        )
         # detach() gives a score-function estimator: no gradient is requested
         # through the decoder or the nonconvex planning oracle.
         latent = latent_distribution.sample().detach()
-        weight_logits = weight_distribution.sample().detach()
         log_probability = latent_distribution.log_prob(latent).sum()
-        log_probability = log_probability + weight_distribution.log_prob(weight_logits).sum()
+        if self.weight_logit_location.numel() == 1:
+            # A single support always has weight one. Sampling its logit would
+            # add action-independent score-function noise and update a parameter
+            # that cannot change either the scenario or the planning decision.
+            weights = torch.ones_like(self.weight_logit_location)
+        else:
+            weight_distribution = torch.distributions.Normal(
+                self.weight_logit_location,
+                torch.full_like(self.weight_logit_location, exploration_std),
+            )
+            weight_logits = weight_distribution.sample().detach()
+            log_probability = log_probability + weight_distribution.log_prob(weight_logits).sum()
+            weights = torch.softmax(weight_logits, dim=0)
         return SupportSample(
             latent=latent,
-            weights=torch.softmax(weight_logits, dim=0),
+            weights=weights,
             log_probability=log_probability,
         )
 
@@ -56,3 +79,6 @@ class DirectSupportPolicy(nn.Module):
     def weight_entropy(self) -> torch.Tensor:
         weights = torch.softmax(self.weight_logit_location, dim=0)
         return -(weights * torch.log(weights.clamp_min(1.0e-8))).sum()
+
+    def latent_prior_penalty(self) -> torch.Tensor:
+        return self.latent_location.square().mean()

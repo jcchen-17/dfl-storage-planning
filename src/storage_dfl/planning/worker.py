@@ -21,6 +21,11 @@ def main() -> None:
         payload["costs"],
         payload["data"],
     )
+    warm_start_cached = bool(payload.get("warm_start_cached", False))
+    # A fresh worker starts with an empty warm-start cache. Adopt whatever the
+    # parent already computed so the no-storage bootstrap is solved once per
+    # scenario set rather than once per solve.
+    oracle._injected_warm_start = (warm_start_cached, payload.get("warm_start_values"))
     result = oracle.solve(
         payload["scenarios"],
         weights=payload["weights"],
@@ -28,7 +33,17 @@ def main() -> None:
         allow_carbon_slack=payload["allow_carbon_slack"],
         use_cache=payload["use_cache"],
     )
-    args.output.write_bytes(pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL))
+    # solve() performs exactly one solve here, so the cache holds at most the
+    # single entry belonging to this scenario set.
+    computed = not warm_start_cached and bool(oracle._warm_start_cache)
+    response = {
+        "result": result,
+        "warm_start_values": (
+            next(iter(oracle._warm_start_cache.values())) if computed else None
+        ),
+        "warm_start_computed": computed,
+    }
+    args.output.write_bytes(pickle.dumps(response, protocol=pickle.HIGHEST_PROTOCOL))
 
 
 if __name__ == "__main__":

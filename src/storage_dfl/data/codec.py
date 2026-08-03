@@ -18,25 +18,56 @@ class ScenarioCodec:
     trajectory_std: np.ndarray
     context_mean: np.ndarray
     context_std: np.ndarray
+    context_anchors: np.ndarray
+
+    @staticmethod
+    def _farthest_point_indices(features: np.ndarray, count: int) -> np.ndarray:
+        """Select diverse observed rows without inventing off-manifold anchors."""
+
+        if features.ndim != 2 or features.shape[0] == 0:
+            raise ValueError("Anchor features must be a non-empty matrix.")
+        count = min(int(count), features.shape[0])
+        center = features.mean(axis=0, keepdims=True)
+        first = int(np.argmax(np.sum((features - center) ** 2, axis=1)))
+        selected = [first]
+        available = np.ones(features.shape[0], dtype=bool)
+        available[first] = False
+        minimum_distance = np.sum((features - features[first]) ** 2, axis=1)
+        while len(selected) < count:
+            next_index = int(np.argmax(np.where(available, minimum_distance, -np.inf)))
+            selected.append(next_index)
+            available[next_index] = False
+            distance = np.sum((features - features[next_index]) ** 2, axis=1)
+            minimum_distance = np.minimum(minimum_distance, distance)
+        return np.asarray(selected, dtype=np.int64)
 
     @classmethod
     def fit(cls, pool: ScenarioPool, feeder: Feeder) -> "ScenarioCodec":
         raw = np.stack([cls._pack(scenario) for scenario in pool.scenarios])
         contexts = np.stack([scenario.context for scenario in pool.scenarios])
+        context_mean = contexts.mean(axis=0)
+        context_std = np.maximum(contexts.std(axis=0), 1.0e-4)
+        normalized_contexts = (contexts - context_mean) / context_std
+        anchor_indices = cls._farthest_point_indices(
+            normalized_contexts,
+            min(16, len(pool.scenarios)),
+        )
         return cls(
             feeder=feeder,
             horizon=pool.scenarios[0].horizon,
             trajectory_mean=raw.mean(axis=0),
             trajectory_std=np.maximum(raw.std(axis=0), 1.0e-4),
-            context_mean=contexts.mean(axis=0),
-            context_std=np.maximum(contexts.std(axis=0), 1.0e-4),
+            context_mean=context_mean,
+            context_std=context_std,
+            context_anchors=normalized_contexts[anchor_indices].astype(np.float32),
         )
 
     @classmethod
     def from_normalization_dict(cls, payload: dict, feeder: Feeder) -> "ScenarioCodec":
-        if int(payload.get("layout_version", 0)) != 2:
+        layout_version = int(payload.get("layout_version", 0))
+        if layout_version not in {2, 3}:
             raise ValueError(
-                "Normalization layout is not the phase-resolved v2 format; retrain the CVAE."
+                "Normalization layout is not a supported phase-resolved format; retrain the CVAE."
             )
         return cls(
             feeder=feeder,
@@ -45,6 +76,10 @@ class ScenarioCodec:
             trajectory_std=np.asarray(payload["trajectory_std"], dtype=np.float32),
             context_mean=np.asarray(payload["context_mean"], dtype=np.float32),
             context_std=np.asarray(payload["context_std"], dtype=np.float32),
+            context_anchors=np.asarray(
+                payload.get("context_anchors", []),
+                dtype=np.float32,
+            ).reshape(-1, len(payload["context_mean"])),
         )
 
     @staticmethod
@@ -136,25 +171,64 @@ class ScenarioCodec:
         return scenario
 
     def support_conditions(self, count: int) -> np.ndarray:
-        """Place fixed conditional anchors at quantiles of the context manifold."""
+        """Return diverse conditions that were actually observed during fitting."""
 
         if count <= 0:
             raise ValueError("The support-scenario count must be positive.")
-        # Contexts are standardized before this method is called by the pipeline.
-        # The anchors span the dominant conditional direction without choosing any
-        # realized trajectory from the historical pool.
-        quantiles = np.linspace(-0.75, 0.75, count, dtype=np.float32)
-        anchors = np.zeros((count, self.context_dim), dtype=np.float32)
-        anchors[:, 0] = quantiles
-        return anchors
+        if self.context_anchors.shape[0] == 0:
+            # Backward-compatible fallback for v2 normalization artifacts. New
+            # runs always persist observed anchors and should not enter here.
+            quantiles = np.linspace(-0.75, 0.75, count, dtype=np.float32)
+            anchors = np.zeros((count, self.context_dim), dtype=np.float32)
+            anchors[:, 0] = quantiles
+            return anchors
+        indices = self._farthest_point_indices(self.context_anchors, count)
+        return self.context_anchors[indices].copy()
+
+    def support_indices(self, pool: ScenarioPool, count: int) -> np.ndarray:
+        """Choose real scenarios spanning context and decision-relevant extremes."""
+
+        if count <= 0:
+            raise ValueError("The support-scenario count must be positive.")
+        _, contexts = self.encode_pool(pool)
+        metrics = []
+        for scenario in pool.scenarios:
+            net_load = scenario.active_load_mw.sum(axis=(1, 2)) - scenario.pv_available_mw.sum(axis=(1, 2))
+            metrics.append(
+                (
+                    float(net_load.max()),
+                    float(np.quantile(net_load, 0.95)),
+                    float(np.ptp(scenario.grid_price_per_mwh)),
+                    float(scenario.grid_carbon_t_per_mwh.max()),
+                    float(scenario.workload_arrival.max()),
+                )
+            )
+        decision_features = np.asarray(metrics, dtype=np.float32)
+        decision_features = (decision_features - decision_features.mean(axis=0)) / np.maximum(
+            decision_features.std(axis=0), 1.0e-4
+        )
+        return self._farthest_point_indices(
+            np.concatenate((contexts, decision_features), axis=1),
+            count,
+        )
+
+    def field_masks(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Masks for physically present P, Q and PV node-phase channels."""
+
+        return (
+            (self.feeder.base_active_load_mw.reshape(-1) > 0.0),
+            (self.feeder.base_reactive_load_mvar.reshape(-1) > 0.0),
+            (self.feeder.pv_capacity_mw.reshape(-1) > 0.0),
+        )
 
     def normalization_dict(self) -> dict[str, object]:
         return {
-            "layout_version": 2,
+            "layout_version": 3,
             "layout": "time-major:[P_bus_phase,Q_bus_phase,PV_bus_phase,workload,pue,price,carbon]",
             "horizon": self.horizon,
             "trajectory_mean": self.trajectory_mean.tolist(),
             "trajectory_std": self.trajectory_std.tolist(),
             "context_mean": self.context_mean.tolist(),
             "context_std": self.context_std.tolist(),
+            "context_anchors": self.context_anchors.tolist(),
         }

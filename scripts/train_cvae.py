@@ -8,6 +8,7 @@ def main() -> None:
     parser.add_argument("--config", default="configs/demo.yaml")
     parser.add_argument("--no-tensorboard", action="store_true")
     args = parser.parse_args()
+    print(f"Starting CVAE training with {args.config}...", flush=True)
     result = train_cvae_stage(args.config, tensorboard=not args.no_tensorboard)
     print(f"device: {result['device']}")
     print(f"epochs: {result['epochs']}")

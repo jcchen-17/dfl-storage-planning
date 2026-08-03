@@ -90,6 +90,15 @@ class StoragePlanningOracle:
                 "flow_limit_formulation must be 'quadratic' or 'polygon'"
             )
         self._cache: dict[tuple, PlanningResult] = {}
+        # The no-storage bootstrap depends only on the scenario set, the weights
+        # and the carbon-slack switch -- never on fixed_design.  Every solve used
+        # to repeat it, which on the 48 h case cost up to 90 s per solve and
+        # dominated DFL training.  Cache the resulting variable assignment so one
+        # bootstrap serves the whole fixed validation set.
+        self._warm_start_cache: dict[tuple, dict[str, float] | None] = {}
+        # Consumed by the next solve() so the isolated worker can adopt the
+        # parent's cached bootstrap without reconstructing its cache key.
+        self._injected_warm_start: tuple[bool, dict[str, float] | None] | None = None
 
     def solve(
         self,
@@ -125,6 +134,20 @@ class StoragePlanningOracle:
         if use_cache and cache_key in self._cache:
             return self._cache[cache_key]
 
+        warm_start_key = self._warm_start_key(
+            scenario_tuple, weight_tuple, allow_carbon_slack
+        )
+        if self._injected_warm_start is not None:
+            injected_cached, injected_values = self._injected_warm_start
+            self._injected_warm_start = None
+            if injected_cached:
+                self._warm_start_cache[warm_start_key] = injected_values
+        warm_start_cached = (
+            not self._warm_start_supported(fixed_design)
+            or warm_start_key in self._warm_start_cache
+        )
+        warm_start_values = self._warm_start_cache.get(warm_start_key)
+
         # The user's Windows environment contains different Intel OpenMP DLLs
         # from conda NumPy and the pip PyTorch wheel.  Repeated SCIP solves after
         # torch inference can initialize both runtimes.  Run each planning solve
@@ -135,16 +158,28 @@ class StoragePlanningOracle:
             and "torch" in sys.modules
             and os.environ.get("STORAGE_DFL_SOLVER_WORKER") != "1"
         ):
-            result = self._solve_isolated(
+            result, worker_warm_start, worker_computed = self._solve_isolated(
                 scenario_tuple,
                 weight_tuple,
                 fixed_design,
                 allow_carbon_slack,
                 use_cache,
+                warm_start_values,
+                warm_start_cached,
             )
+            if worker_computed:
+                self._warm_start_cache[warm_start_key] = worker_warm_start
             if use_cache:
                 self._cache[cache_key] = result
             return result
+
+        if not warm_start_cached:
+            warm_start_values = self._no_storage_bootstrap_values(
+                scenario_tuple,
+                weight_tuple,
+                allow_carbon_slack,
+            )
+            self._warm_start_cache[warm_start_key] = warm_start_values
 
         artifacts = self._build_model(
             scenario_tuple,
@@ -153,19 +188,19 @@ class StoragePlanningOracle:
             allow_carbon_slack=allow_carbon_slack,
         )
         model = artifacts.model
-        if fixed_design is None:
-            if not self._add_no_storage_warm_start(
-                model,
-                scenario_tuple,
-                weight_tuple,
-                allow_carbon_slack,
-            ):
-                warm_start = model.createPartialSol()
-                for bus in self.feeder.storage_candidates:
-                    model.setSolVal(warm_start, artifacts.site[bus], 0.0)
-                    model.setSolVal(warm_start, artifacts.power_capacity[bus], 0.0)
-                    model.setSolVal(warm_start, artifacts.energy_capacity[bus], 0.0)
-                model.addSol(warm_start)
+        warm_start_accepted = self._apply_no_storage_warm_start(
+            model,
+            warm_start_values,
+            scenario_tuple,
+            fixed_design,
+        )
+        if fixed_design is None and not warm_start_accepted:
+            warm_start = model.createPartialSol()
+            for bus in self.feeder.storage_candidates:
+                model.setSolVal(warm_start, artifacts.site[bus], 0.0)
+                model.setSolVal(warm_start, artifacts.power_capacity[bus], 0.0)
+                model.setSolVal(warm_start, artifacts.energy_capacity[bus], 0.0)
+            model.addSol(warm_start)
         model.optimize()
         status = str(model.getStatus())
         scenario_names = tuple(scenario.name for scenario in scenario_tuple)
@@ -183,10 +218,24 @@ class StoragePlanningOracle:
                     return float(expression)
                 return float(model.getVal(expression))
 
-            installed = {
-                bus: int(model.getVal(artifacts.site[bus]) > 0.5)
+            # Rounding at 0.5 hides a fractional binary: the design would be
+            # reported as a whole site while investment_cost still charges the
+            # fractional one, so the two disagree with no visible sign of it.
+            site_values = {
+                bus: float(model.getVal(artifacts.site[bus]))
                 for bus in self.feeder.storage_candidates
             }
+            for bus, value in site_values.items():
+                deviation = min(abs(value), abs(value - 1.0))
+                if deviation > 1.0e-4:
+                    print(
+                        f"WARNING site[{bus}] came back at {value:.6f}, which is not "
+                        f"integral (off by {deviation:.6f}); the reported design "
+                        f"rounds it but investment_cost does not, so the two are "
+                        f"inconsistent for this solution.",
+                        flush=True,
+                    )
+            installed = {bus: int(value > 0.5) for bus, value in site_values.items()}
             design = StorageDesign(
                 site=installed,
                 power_mw={
@@ -222,24 +271,64 @@ class StoragePlanningOracle:
         model.freeProb()
         return result
 
-    def _add_no_storage_warm_start(
+    def _warm_start_supported(self, fixed_design: StorageDesign | None) -> bool:
+        """Whether an idle-storage seed is a valid solution of the target model.
+
+        With self-discharge the prescribed inventory decays, so holding every
+        storage trajectory at its starting level violates the energy dynamics
+        and the seed would be rejected anyway.  Checking first avoids paying for
+        a bootstrap solve whose result cannot be used.
+        """
+
+        return fixed_design is None or self.planning.self_discharge == 0.0
+
+    def _warm_start_key(
         self,
-        target_model: Model,
         scenarios: tuple[Scenario, ...],
         weights: tuple[float, ...],
         allow_carbon_slack: bool,
-    ) -> bool:
-        """Find a full feasible operating point with storage fixed off."""
+    ) -> tuple:
+        return (
+            tuple(scenario.name for scenario in scenarios),
+            tuple(round(weight, 8) for weight in weights),
+            allow_carbon_slack,
+        )
 
-        bootstrap_limit = min(
-            15.0,
-            max(10.0, 0.25 * self.planning.solver_time_limit_seconds),
+    def _no_storage_bootstrap_values(
+        self,
+        scenarios: tuple[Scenario, ...],
+        weights: tuple[float, ...],
+        allow_carbon_slack: bool,
+    ) -> dict[str, float] | None:
+        """Solve the storage-disabled model and return its variable assignment.
+
+        The result depends only on the arguments, so callers cache it by
+        ``_warm_start_key`` and reuse it for every design evaluated against the
+        same scenarios.  Returns None when SCIP found no bootstrap incumbent.
+        """
+
+        # The bootstrap is itself a nonconvex MINLP: dropping storage removes the
+        # vintage layers but keeps the bilinear nodal-carbon equalities and the
+        # flow-direction binaries.  Capping it at a constant made the budget
+        # independent of solver_time_limit_seconds, so the bootstrap timed out,
+        # returned no solution, and the main solve was left without any incumbent.
+        # On the 120 h case SCIP typically needs a little over 30 seconds before
+        # it discovers the strong zero-storage operating point.  A 30 s/20%
+        # bootstrap therefore seeded the main model with a much worse incumbent,
+        # which could make an optional-storage solve report a dominated minimum-
+        # capacity installation.  Give the bootstrap enough time and use the
+        # same requested gap as the parent solve.
+        configured_limit = float(self.planning.warm_start_time_limit_seconds)
+        bootstrap_limit = (
+            configured_limit
+            if configured_limit > 0.0
+            else max(60.0, 0.3 * self.planning.solver_time_limit_seconds)
         )
         bootstrap_planning = replace(
             self.planning,
             max_storage_sites=0,
             solver_time_limit_seconds=bootstrap_limit,
-            solver_relative_gap=max(self.planning.solver_relative_gap, 0.20),
+            solver_relative_gap=self.planning.solver_relative_gap,
         )
         bootstrap_oracle = StoragePlanningOracle(
             self.feeder,
@@ -257,19 +346,94 @@ class StoragePlanningOracle:
         bootstrap_solution = bootstrap.model.getBestSol()
         if bootstrap_solution is None:
             bootstrap.model.freeProb()
-            return False
-        target_by_name = {variable.name: variable for variable in target_model.getVars()}
-        warm_start = target_model.createSol()
-        for variable in bootstrap.model.getVars():
-            target = target_by_name.get(variable.name)
-            if target is not None:
-                target_model.setSolVal(
-                    warm_start,
-                    target,
-                    float(bootstrap.model.getSolVal(bootstrap_solution, variable)),
-                )
-        accepted = bool(target_model.addSol(warm_start))
+            return None
+        values = {
+            variable.name: float(
+                bootstrap.model.getSolVal(bootstrap_solution, variable)
+            )
+            for variable in bootstrap.model.getVars()
+        }
         bootstrap.model.freeProb()
+        return values
+
+    def _apply_no_storage_warm_start(
+        self,
+        target_model: Model,
+        bootstrap_values: dict[str, float] | None,
+        scenarios: tuple[Scenario, ...],
+        fixed_design: StorageDesign | None,
+    ) -> bool:
+        """Seed a full operating point with storage idle.
+
+        For free planning this is the no-storage incumbent. For fixed-design
+        validation it retains the prescribed investment but initializes every
+        storage trajectory at its starting inventory with zero charge/discharge.
+        The latter guarantees that validation cannot return an incumbent worse
+        than no-storage operation plus the fixed annual investment merely
+        because SCIP struggled to discover an idle battery schedule.
+        """
+
+        if bootstrap_values is None or not self._warm_start_supported(fixed_design):
+            return False
+        target_variables = tuple(target_model.getVars())
+        target_by_name = {variable.name: variable for variable in target_variables}
+        warm_start = target_model.createSol()
+        # The storage-disabled bootstrap omits charge/discharge, inventory and
+        # carbon-vintage variables that exist in the storage-enabled target.
+        # A full SCIP solution leaves no unspecified entries, so initialize all
+        # target-only variables to their valid zero-storage value before copying
+        # the common operating point by name.
+        for variable in target_variables:
+            target_model.setSolVal(warm_start, variable, 0.0)
+        for name, value in bootstrap_values.items():
+            target = target_by_name.get(name)
+            if target is not None:
+                target_model.setSolVal(warm_start, target, value)
+        if fixed_design is not None:
+            for bus in self.feeder.storage_candidates:
+                installed = int(fixed_design.site[bus] > 0)
+                power = float(fixed_design.power_mw[bus]) if installed else 0.0
+                energy = float(fixed_design.energy_mwh[bus]) if installed else 0.0
+                inventory = self.planning.initial_soc * energy
+                carbon_mass = self.planning.initial_carbon_intensity * inventory
+                for name, value in (
+                    (f"site[{bus}]", installed),
+                    (f"pcap[{bus}]", power),
+                    (f"ecap[{bus}]", energy),
+                ):
+                    target = target_by_name.get(name)
+                    if target is not None:
+                        target_model.setSolVal(warm_start, target, float(value))
+                for sid in range(len(scenarios)):
+                    for t in range(scenarios[0].horizon + 1):
+                        for name, value in (
+                            (f"aggregate_e[{sid},{bus},{t}]", inventory),
+                            (f"aggregate_m[{sid},{bus},{t}]", carbon_mass),
+                            (
+                                f"aggregate_ci[{sid},{bus},{t}]",
+                                self.planning.initial_carbon_intensity * installed,
+                            ),
+                            (f"layer_e[{sid},{bus},0,{t}]", inventory),
+                            (f"layer_m[{sid},{bus},0,{t}]", carbon_mass),
+                        ):
+                            target = target_by_name.get(name)
+                            if target is not None:
+                                target_model.setSolVal(warm_start, target, float(value))
+                    target = target_by_name.get(f"vintage_ci[{sid},{bus},0]")
+                    if target is not None:
+                        target_model.setSolVal(
+                            warm_start,
+                            target,
+                            self.planning.initial_carbon_intensity * installed,
+                        )
+        accepted = bool(target_model.addSol(warm_start))
+        if not accepted:
+            print(
+                "WARNING: SCIP rejected the complete no-storage warm start; "
+                "the storage-enabled incumbent may be weaker than a separately "
+                "solved no-storage plan.",
+                flush=True,
+            )
         return accepted
 
     def _solve_isolated(
@@ -279,7 +443,16 @@ class StoragePlanningOracle:
         fixed_design: StorageDesign | None,
         allow_carbon_slack: bool,
         use_cache: bool,
-    ) -> PlanningResult:
+        warm_start_values: dict[str, float] | None,
+        warm_start_cached: bool,
+    ) -> tuple[PlanningResult, dict[str, float] | None, bool]:
+        """Run one solve in a clean worker and report any bootstrap it computed.
+
+        The worker is a fresh process, so it cannot see the parent's warm-start
+        cache.  Passing the cached assignment in and handing a newly computed one
+        back keeps a single bootstrap per scenario set across the whole run.
+        """
+
         payload = {
             "feeder": self.feeder,
             "planning": self.planning,
@@ -290,6 +463,8 @@ class StoragePlanningOracle:
             "fixed_design": fixed_design,
             "allow_carbon_slack": allow_carbon_slack,
             "use_cache": use_cache,
+            "warm_start_values": warm_start_values,
+            "warm_start_cached": warm_start_cached,
         }
         with tempfile.TemporaryDirectory(prefix="storage_dfl_solver_") as directory:
             directory_path = Path(directory)
@@ -317,10 +492,16 @@ class StoragePlanningOracle:
                     + completed.stdout
                     + completed.stderr
                 )
-            result = pickle.loads(output_path.read_bytes())
-        if not isinstance(result, PlanningResult):
+            response = pickle.loads(output_path.read_bytes())
+        if not isinstance(response, dict) or not isinstance(
+            response.get("result"), PlanningResult
+        ):
             raise TypeError("The isolated SCIP worker returned an invalid result.")
-        return result
+        return (
+            response["result"],
+            response.get("warm_start_values"),
+            bool(response.get("warm_start_computed", False)),
+        )
 
     def _cache_key(
         self,
@@ -361,13 +542,11 @@ class StoragePlanningOracle:
         horizon = scenarios[0].horizon
         dt = self.data.delta_t_hours
         buses = feeder.buses
-        phases = feeder.phases
         candidates = feeder.storage_candidates
         bus_index = feeder.bus_index
         phase_index = feeder.phase_index
         bus_phases = feeder.bus_phases
         root = feeder.root
-        line_keys = tuple((line.parent, line.child) for line in feeder.lines)
         line_data = {(line.parent, line.child): line for line in feeder.lines}
         phase_edges = tuple(
             (line.parent, line.child, phase)
@@ -791,9 +970,13 @@ class StoragePlanningOracle:
                     model.addCons(
                         aggregate_energy[bus, horizon] == aggregate_energy[bus, 0]
                     )
+                    # Same relaxation as the layered branch: end no dirtier than
+                    # the start.  Under a single blended intensity this matters
+                    # even more, because any charge below the initial intensity
+                    # dilutes the pool irreversibly, so equality forbids cycling.
                     model.addCons(
                         aggregate_carbon_mass[bus, horizon]
-                        == aggregate_carbon_mass[bus, 0]
+                        <= aggregate_carbon_mass[bus, 0]
                     )
 
             for bus in (() if storage_disabled or use_aggregate else candidates):
@@ -865,7 +1048,12 @@ class StoragePlanningOracle:
                 terminal_energy = quicksum(layer_energy[bus, k, horizon] for k in layers)
                 terminal_mass = quicksum(layer_carbon_mass[bus, k, horizon] for k in layers)
                 model.addCons(terminal_energy == layer_energy[bus, 0, 0])
-                model.addCons(terminal_mass == layer_carbon_mass[bus, 0, 0])
+                # Energy must cycle exactly, but carbon only has to end no dirtier
+                # than it started.  Requiring equality assumes some charging hour
+                # matches initial_carbon_intensity; when every available hour is
+                # cleaner than the initial inventory, equality is unreachable and
+                # the only feasible schedule is to never cycle the battery at all.
+                model.addCons(terminal_mass <= layer_carbon_mass[bus, 0, 0])
                 for k in layers:
                     activation = site[bus] if k == 0 else layer_active[bus, k]
                     for t in states:
@@ -1184,7 +1372,7 @@ class StoragePlanningOracle:
 
                 interval_cost = (
                     float(scenario.grid_price_per_mwh[t]) * grid[t]
-                    + 125.0 * generator[t]
+                    + ccfg.generator_dollars_per_mwh * generator[t]
                     + ccfg.degradation_dollars_per_mwh
                     * quicksum(charge_power[bus, t] + discharge_power[bus, t] for bus in candidates)
                     + ccfg.delay_dollars_per_task_hour * backlog[t]

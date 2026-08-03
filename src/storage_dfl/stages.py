@@ -2,16 +2,11 @@ from __future__ import annotations
 
 import json
 import csv
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-# The Windows conda environment ships Intel OpenMP through NumPy/MKL while the
-# pip PyTorch wheel bundles another copy.  Initializing the environment runtime
-# before importing torch makes the loader reuse the already loaded DLL; unlike
-# KMP_DUPLICATE_LIB_OK, this does not permit two runtimes to coexist.
-np.dot(np.ones(1, dtype=float), np.ones(1, dtype=float))
 import torch
 
 from storage_dfl.config import ExperimentConfig, load_config
@@ -21,7 +16,12 @@ from storage_dfl.data import (
     ScenarioPool,
     load_historical_scenarios,
 )
-from storage_dfl.dfl import DirectSupportPolicy, resolve_device, train_direct_generator
+from storage_dfl.dfl import (
+    DirectSupportPolicy,
+    resolve_device,
+    train_direct_generator,
+    train_scenario_bo,
+)
 from storage_dfl.models import ConditionalVAE, train_cvae
 from storage_dfl.network import Feeder, ieee13_unbalanced_microgrid
 from storage_dfl.planning import StoragePlanningOracle
@@ -37,7 +37,14 @@ class ArtifactPaths:
 
     @property
     def dfl_checkpoint(self) -> Path:
+        """Legacy, unscoped DFL checkpoint path."""
         return self.root / "dfl_support.pt"
+
+    def dfl_checkpoint_for(self, method: str) -> Path:
+        return self.root / f"dfl_support_{method}.pt"
+
+    def dfl_json_for(self, stem: str, method: str) -> Path:
+        return self.root / f"{stem}_{method}.json"
 
     @property
     def normalization(self) -> Path:
@@ -161,6 +168,9 @@ def train_cvae_stage(
             horizon=config.data.horizon,
             device=device,
             seed=config.seed,
+            trajectory_mean=codec.trajectory_mean,
+            trajectory_std=codec.trajectory_std,
+            field_masks=codec.field_masks(),
             writer=writer,
         )
     finally:
@@ -188,6 +198,7 @@ def train_cvae_stage(
         "epochs": len(history),
         "initial_loss": history[0].loss,
         "final_loss": history[-1].loss,
+        "final_metrics": asdict(history[-1]),
         "checkpoint": str(paths.cvae_checkpoint),
     }
     _write_json(paths.root / "cvae_result.json", payload)
@@ -198,8 +209,13 @@ def train_dfl_stage(
     config_path: str | Path,
     *,
     tensorboard: bool = True,
+    method_override: str | None = None,
 ) -> dict:
     config = load_config(config_path)
+    if method_override is not None:
+        if method_override not in {"reinforce", "scenario_bo"}:
+            raise ValueError("method_override must be 'reinforce' or 'scenario_bo'.")
+        config = replace(config, dfl=replace(config.dfl, method=method_override))
     paths = ArtifactPaths(config.output_dir)
     paths.root.mkdir(parents=True, exist_ok=True)
     np.random.seed(config.seed)
@@ -208,51 +224,104 @@ def train_dfl_stage(
     codec = _load_codec(paths, feeder)
     device = resolve_device(config.dfl.device)
     cvae = _load_cvae(paths, device)
-    policy = DirectSupportPolicy(
-        support_count=config.dfl.num_support_scenarios,
-        latent_dim=cvae.latent_dim,
-        seed=config.seed,
-    )
     oracle = StoragePlanningOracle(feeder, config.planning, config.costs, config.data)
-    writer = _summary_writer(paths.tensorboard / "dfl", tensorboard, config)
+    writer = _summary_writer(
+        paths.tensorboard / f"dfl_{config.dfl.method}", tensorboard, config
+    )
+    policy: DirectSupportPolicy | None = None
+    support_source_names: list[str] = []
     try:
-        result = train_direct_generator(
-            policy,
-            cvae,
-            codec,
-            observed_pool,
-            oracle,
-            config.dfl,
-            config.seed,
-            writer=writer,
-        )
+        if config.dfl.method == "scenario_bo":
+            result = train_scenario_bo(
+                cvae,
+                codec,
+                observed_pool,
+                oracle,
+                config.dfl,
+                config.seed,
+                writer=writer,
+            )
+            support_source_names = list(result.support_source_names)
+        elif config.dfl.method == "reinforce":
+            validation_trajectories, validation_contexts = codec.encode_pool(observed_pool)
+            support_indices = codec.support_indices(
+                observed_pool,
+                config.dfl.num_support_scenarios,
+            )
+            support_source_names = observed_pool.names(support_indices.tolist())
+            support_conditions = torch.as_tensor(
+                validation_contexts[support_indices],
+                dtype=torch.float32,
+                device=device,
+            )
+            with torch.no_grad():
+                initial_latent, _ = cvae.encode(
+                    torch.as_tensor(
+                        validation_trajectories[support_indices],
+                        dtype=torch.float32,
+                        device=device,
+                    ),
+                    support_conditions,
+                )
+            policy = DirectSupportPolicy(
+                support_count=config.dfl.num_support_scenarios,
+                latent_dim=cvae.latent_dim,
+                seed=config.seed,
+                initial_latent=initial_latent.cpu(),
+            )
+            result = train_direct_generator(
+                policy,
+                cvae,
+                codec,
+                observed_pool,
+                oracle,
+                config.dfl,
+                config.seed,
+                support_conditions=support_conditions,
+                writer=writer,
+            )
+        else:
+            raise ValueError("dfl.method must be 'scenario_bo' or 'reinforce'.")
     finally:
         if writer is not None:
             writer.close()
 
-    torch.save(
-        {
-            "policy_state_dict": policy.state_dict(),
-            "support_count": config.dfl.num_support_scenarios,
-            "latent_dim": cvae.latent_dim,
-            "support_latent": torch.as_tensor(result.support_latent),
-            "support_conditions": torch.as_tensor(result.support_conditions),
-            "scenario_weights": torch.as_tensor(result.scenario_weights),
-        },
-        paths.dfl_checkpoint,
+    checkpoint = {
+        "method": config.dfl.method,
+        "support_count": config.dfl.num_support_scenarios,
+        "latent_dim": cvae.latent_dim,
+        "support_latent": torch.as_tensor(result.support_latent),
+        "support_conditions": torch.as_tensor(result.support_conditions),
+        "scenario_weights": torch.as_tensor(result.scenario_weights),
+        "support_source_names": support_source_names,
+    }
+    if policy is not None:
+        checkpoint["policy_state_dict"] = policy.state_dict()
+    if config.dfl.method == "scenario_bo":
+        checkpoint["candidate_source_names"] = list(result.candidate_source_names)
+        checkpoint["selector_feature_names"] = list(result.feature_names)
+        checkpoint["selector_parameters"] = torch.as_tensor(result.best_parameters)
+    dfl_checkpoint = paths.dfl_checkpoint_for(config.dfl.method)
+    torch.save(checkpoint, dfl_checkpoint)
+    _write_json(
+        paths.dfl_json_for("dfl_history", config.dfl.method),
+        result.history_as_dicts(),
     )
-    _write_json(paths.root / "dfl_history.json", result.history_as_dicts())
     payload = {
         "device": result.device,
         "split": config.data.validation_split,
         "validation_scenarios": len(observed_pool.scenarios),
+        "method": config.dfl.method,
         "epochs": len(result.history),
         "scenario_weights": list(result.scenario_weights),
+        "support_source_names": checkpoint["support_source_names"],
         "planning": result.planning_result.to_dict(),
         "training_validation": result.full_validation_result.to_dict(),
-        "checkpoint": str(paths.dfl_checkpoint),
+        "checkpoint": str(dfl_checkpoint),
     }
-    _write_json(paths.root / "dfl_result.json", payload)
+    if config.dfl.method == "scenario_bo":
+        payload["finalist_evaluations"] = list(result.finalist_evaluations)
+    _write_json(paths.dfl_json_for("dfl_result", config.dfl.method), payload)
     return payload
 
 
@@ -299,18 +368,66 @@ def _write_trajectories(
                             )
 
 
+def _scenario_set_summary(
+    scenarios: tuple[Scenario, ...],
+    weights: tuple[float, ...] | None = None,
+) -> dict[str, float]:
+    if weights is None:
+        normalized_weights = np.full(len(scenarios), 1.0 / len(scenarios))
+    else:
+        normalized_weights = np.asarray(weights, dtype=float)
+        normalized_weights = normalized_weights / normalized_weights.sum()
+    peak_load = []
+    peak_net_load = []
+    price_spread = []
+    for scenario in scenarios:
+        load = scenario.active_load_mw.sum(axis=(1, 2))
+        pv = scenario.pv_available_mw.sum(axis=(1, 2))
+        peak_load.append(float(load.max()))
+        peak_net_load.append(float((load - pv).max()))
+        price_spread.append(float(np.ptp(scenario.grid_price_per_mwh)))
+    return {
+        "weighted_peak_load_mw": float(np.dot(normalized_weights, peak_load)),
+        "maximum_peak_load_mw": float(max(peak_load)),
+        "weighted_peak_net_load_mw": float(np.dot(normalized_weights, peak_net_load)),
+        "maximum_peak_net_load_mw": float(max(peak_net_load)),
+        "weighted_price_spread_per_mwh": float(np.dot(normalized_weights, price_spread)),
+        "maximum_price_spread_per_mwh": float(max(price_spread)),
+    }
+
+
 @torch.no_grad()
-def evaluate_stage(config_path: str | Path) -> dict:
+def evaluate_stage(
+    config_path: str | Path,
+    *,
+    method_override: str | None = None,
+) -> dict:
     config = load_config(config_path)
+    if method_override is not None:
+        if method_override not in {"reinforce", "scenario_bo"}:
+            raise ValueError("method_override must be 'reinforce' or 'scenario_bo'.")
+        config = replace(config, dfl=replace(config.dfl, method=method_override))
     paths = ArtifactPaths(config.output_dir)
     feeder, observed_pool = _experiment_data(config, config.data.test_split)
-    evaluation_pool = ScenarioPool(
-        observed_pool.scenarios[: min(config.dfl.final_validation_size, len(observed_pool.scenarios))]
-    )
     codec = _load_codec(paths, feeder)
+    evaluation_indices = codec.support_indices(
+        observed_pool,
+        min(config.dfl.final_validation_size, len(observed_pool.scenarios)),
+    )
+    evaluation_pool = ScenarioPool(observed_pool.subset(evaluation_indices.tolist()))
     device = resolve_device(config.dfl.device)
     cvae = _load_cvae(paths, device)
-    checkpoint = _load_torch(paths.dfl_checkpoint, device)
+    checkpoint_path = paths.dfl_checkpoint_for(config.dfl.method)
+    # Read old runs when no method-scoped checkpoint has been created yet.
+    if not checkpoint_path.exists() and paths.dfl_checkpoint.exists():
+        checkpoint_path = paths.dfl_checkpoint
+    checkpoint = _load_torch(checkpoint_path, device)
+    checkpoint_method = checkpoint.get("method", "reinforce")
+    if checkpoint_method != config.dfl.method:
+        raise RuntimeError(
+            f"Requested DFL method {config.dfl.method!r}, but checkpoint "
+            f"{checkpoint_path} contains {checkpoint_method!r}. Train that method first."
+        )
     latent = checkpoint["support_latent"].to(device=device, dtype=torch.float32)
     conditions = checkpoint["support_conditions"].to(device=device, dtype=torch.float32)
     weights = tuple(float(value) for value in checkpoint["scenario_weights"].cpu())
@@ -339,7 +456,7 @@ def evaluate_stage(config_path: str | Path) -> dict:
             f"{validation.solve_time_seconds:.1f} seconds."
         )
     payload = {
-        "method": "CVAE + black-box decision-focused direct scenario generation",
+        "method": checkpoint.get("method", "reinforce"),
         "device": str(device),
         "test_split": config.data.test_split,
         "test_scenarios_evaluated": len(evaluation_pool.scenarios),
@@ -347,12 +464,16 @@ def evaluate_stage(config_path: str | Path) -> dict:
             {"name": scenario.name, "weight": weight, "context": scenario.context.tolist()}
             for scenario, weight in zip(generated, weights)
         ],
+        "scenario_summary": {
+            "generated": _scenario_set_summary(generated, weights),
+            "observed_test": _scenario_set_summary(evaluation_pool.scenarios),
+        },
         "planning": planning.to_dict(),
         "out_of_sample_validation": validation.to_dict(),
     }
-    _write_json(paths.root / "result.json", payload)
+    _write_json(paths.dfl_json_for("result", config.dfl.method), payload)
     _write_trajectories(
-        paths.root / "scenario_trajectories.csv",
+        paths.root / f"scenario_trajectories_{config.dfl.method}.csv",
         evaluation_pool,
         generated,
         weights,

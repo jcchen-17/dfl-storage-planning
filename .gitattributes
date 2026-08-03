@@ -1,0 +1,9 @@
+# core.autocrlf=true was rewriting every touched file's line endings, so a
+# 1,100-line change showed up as a 1,800-line diff with whole files marked as
+# rewritten. Normalize to LF in the repository; checkouts are unaffected.
+* text=auto eol=lf
+
+*.png binary
+*.npz binary
+*.parquet binary
+*.pt binary

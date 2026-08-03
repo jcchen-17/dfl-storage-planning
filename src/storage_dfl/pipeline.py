@@ -14,7 +14,7 @@ def run(config_path: str | Path, *, tensorboard: bool = True) -> dict:
     result = evaluate_stage(config_path)
     site = result["planning"]["design"]["site"]
     installed = [bus for bus, value in site.items() if value > 0]
-    print("CVAE + direct-DFL storage-planning pipeline completed")
+    print("CVAE + decision-focused scenario-selection pipeline completed")
     print(f"installed buses: {installed}")
     print(f"planning objective: {result['planning']['objective']:.2f}")
     print(f"validation objective: {result['out_of_sample_validation']['objective']:.2f}")

@@ -25,6 +25,18 @@ class CVAEConfig:
     learning_rate: float
     beta: float
     ramp_weight: float
+    batch_size: int = 64
+    kl_warmup_epochs: int = 40
+    active_load_weight: float = 0.20
+    reactive_load_weight: float = 0.10
+    pv_weight: float = 0.20
+    workload_weight: float = 0.10
+    pue_weight: float = 0.05
+    price_weight: float = 0.25
+    carbon_weight: float = 0.10
+    net_load_weight: float = 0.15
+    net_peak_weight: float = 0.20
+    price_spread_weight: float = 0.20
 
 
 @dataclass(frozen=True)
@@ -42,6 +54,19 @@ class DFLConfig:
     diversity_weight: float
     weight_entropy_weight: float
     device: str
+    policy_samples_per_epoch: int = 1
+    latent_prior_weight: float = 0.001
+    method: str = "reinforce"
+    candidate_pool_size: int = 12
+    bo_initial_evaluations: int = 6
+    bo_iterations: int = 6
+    bo_parameter_bound: float = 3.0
+    bo_candidate_draws: int = 512
+    bo_kernel_length_scale: float = 1.0
+    bo_exploration: float = 1.5
+    bo_weight_floor: float = 0.02
+    bo_finalists: int = 2
+    decision_deadband_relative: float = 0.005
 
 
 @dataclass(frozen=True)
@@ -70,6 +95,10 @@ class PlanningConfig:
     solver_relative_gap: float
     solver_threads: int
     verbose_solver: bool
+    # Budget for the no-storage bootstrap that seeds each solve. Zero selects
+    # max(60 s, 30% of solver_time_limit_seconds). The bootstrap is cached per
+    # scenario set, so this is paid once per distinct scenario set, not per solve.
+    warm_start_time_limit_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -84,6 +113,7 @@ class CostConfig:
     curtailment_dollars_per_mwh: float
     shedding_dollars_per_mwh: float
     validation_carbon_slack_dollars: float
+    generator_dollars_per_mwh: float = 125.0
 
 
 @dataclass(frozen=True)

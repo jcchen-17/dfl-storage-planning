@@ -8,7 +8,6 @@ import json
 import math
 from pathlib import Path
 
-import numpy as np
 from pyscipopt import Model, quicksum
 
 from diagnose_dfl_feasibility import generated_first_epoch
