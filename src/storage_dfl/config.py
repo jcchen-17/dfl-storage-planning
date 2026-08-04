@@ -199,6 +199,18 @@ class PlanningConfig:
     # it backs up, so it belongs in configuration rather than in the model body.
     backup_generator_mw: float = 1.0
     backup_generator_mvar: float = 0.8
+    # SCIP search strategy. These change how the solver searches, never what it
+    # is solving, so the formulation is untouched. Decision-focused training
+    # ranks samples by their incumbent objective, so reaching a good primal
+    # solution quickly matters more than proving optimality; 'feasibility' plus
+    # aggressive heuristics targets exactly that. Leave at the defaults when
+    # producing final numbers that are reported as optima.
+    solver_emphasis: str = "default"
+    solver_aggressive_heuristics: bool = False
+    # Planning solves that may run concurrently in isolated workers. Samples
+    # within one DFL epoch are independent, so this is the main lever on
+    # wall-clock time. Zero selects one worker, i.e. the original serial path.
+    solver_max_parallel_workers: int = 1
 
 
 @dataclass(frozen=True)

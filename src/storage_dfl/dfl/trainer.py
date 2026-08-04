@@ -182,6 +182,10 @@ def train_direct_generator(
         )
         validation_scenarios = fixed_validation_scenarios
         candidates = []
+        # Every sample of an epoch is drawn before any is solved. The draws keep
+        # their original order, so the policy's random stream is unchanged, but
+        # the planning solves can then be dispatched together.
+        samples = []
         for sample_index in range(max(1, config.policy_samples_per_epoch)):
             sample = policy.sample(exploration_std)
             generated = _decode_support(
@@ -192,7 +196,14 @@ def train_direct_generator(
                 f"dfl_e{epoch:03d}_s{sample_index:02d}",
             )
             weights = tuple(float(value) for value in sample.weights.cpu())
-            plan = oracle.solve(generated, weights=weights)
+            samples.append((sample, generated, weights))
+
+        plans = oracle.solve_many(
+            [(generated, weights) for _, generated, weights in samples]
+        )
+        for sample_index, ((sample, generated, weights), plan) in enumerate(
+            zip(samples, plans, strict=True)
+        ):
             if plan.feasible:
                 validation = oracle.solve(
                     validation_scenarios,

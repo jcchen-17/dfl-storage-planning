@@ -63,7 +63,7 @@ dfl:
   method: reinforce
   # REINFORCE learns one representative 48 h latent scenario. Its weight is
   # fixed at 1.0 and its design is ranked on a fixed representative validation set.
-  num_support_scenarios: 1
+  num_support_scenarios: 3
   epochs: 15
   validation_batch_size: 6
   final_validation_size: 6
@@ -117,11 +117,11 @@ planning:
   # Relaxed for the 3x data center. The previous solution sat at 92% of a 4.0 h
   # duration cap, so the cap would have bound and set the design instead of the
   # economics. Report whether the optimum stays interior.
-  max_power_mw: 2.00
+  max_power_mw: 1.50
   min_energy_mwh: 0.10
-  max_energy_mwh: 8.00
+  max_energy_mwh: 6.00
   min_duration_hours: 1.0
-  max_duration_hours: 8.0
+  max_duration_hours: 6.0
   grid_limit_mw: 5.0
   # Backup generator, sized against the facility it backs up.
   backup_generator_mw: 2.0
@@ -134,33 +134,43 @@ planning:
   # bilinear equalities used by the exact verification model.
   carbon_formulation: mccormick
   flow_limit_formulation: polygon
-  solver_time_limit_seconds: 300
+  solver_time_limit_seconds: 900
   solver_relative_gap: 0.005
   solver_threads: 4
+  # Search strategy. These reorder SCIP's search without changing the model, so
+  # a solution found this way is exactly as valid; only the effort spent proving
+  # optimality shifts. Decision-focused training ranks samples by their incumbent
+  # objective, so reaching a good primal solution quickly is what matters.
+  solver_emphasis: feasibility
+  solver_aggressive_heuristics: true
+  # Samples within one DFL epoch are independent and each already solves in its
+  # own process, so this is the main lever on wall-clock time. Keep it at or
+  # below the physical core count.
+  solver_max_parallel_workers: 4
   verbose_solver: false
   # Budget for the no-storage bootstrap that seeds each solve; 0 selects
   # max(60 s, 30% of solver_time_limit_seconds) = 90 s here. The bootstrap is
   # cached per scenario set, so the fixed validation set pays it once for the
   # whole run and only the per-sample planning solves pay it repeatedly. Lower
   # this first if the bootstrap dominates wall-clock time.
-  warm_start_time_limit_seconds: 0.0
+  warm_start_time_limit_seconds: 120
 
 costs:
   # Calibrated commercial-microgrid case. These costs remain below a current
   # turnkey benchmark so storage can still be selected, but they remove the
   # unrealistically cheap $58/kWh four-hour system used by the strong-storage
   # sensitivity case.
-  capital_recovery_factor: 0.09
-  site_dollars: 20000.0
-  power_dollars_per_mw: 130000.0
-  energy_dollars_per_mwh: 120000.0
-  degradation_dollars_per_mwh: 6.0
+  capital_recovery_factor: 0.10
+  site_dollars: 25000.0
+  power_dollars_per_mw: 150000.0
+  energy_dollars_per_mwh: 150000.0
+  degradation_dollars_per_mwh: 8.0
   demand_dollars_per_mw_year: 150000.0
   generator_dollars_per_mwh: 250.0
-  delay_dollars_per_task_hour: 8.0
+  delay_dollars_per_task_hour: 24.0
   curtailment_dollars_per_mwh: 4.0
   shedding_dollars_per_mwh: 10000.0
-  validation_carbon_slack_dollars: 100000.0
+  validation_carbon_slack_dollars: 300000.0
 
 # Isolated from the calibrated run so retraining the generators cannot overwrite
 # its cvae.pt, normalization.json or DFL checkpoints.

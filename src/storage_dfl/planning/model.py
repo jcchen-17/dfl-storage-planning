@@ -22,6 +22,36 @@ from storage_dfl.planning.results import (
 )
 
 
+_EMPHASIS_SETTINGS = ("default", "feasibility", "optimality", "hardlp", "counter")
+
+
+def _apply_search_strategy(model: Model, pcfg: PlanningConfig) -> None:
+    """Point SCIP at good primal solutions without touching the formulation.
+
+    Both settings only reorder the search.  The model, its constraints and its
+    objective are unchanged, so a solution found this way is exactly as valid as
+    one found with the defaults -- it is only the effort spent proving optimality
+    that shifts.  ``relative_gap`` on the result still tells the caller whether
+    the answer was proven.
+    """
+
+    emphasis = str(pcfg.solver_emphasis).lower()
+    if emphasis not in _EMPHASIS_SETTINGS:
+        raise ValueError(
+            f"solver_emphasis must be one of {_EMPHASIS_SETTINGS}, got {emphasis!r}."
+        )
+    try:
+        from pyscipopt import SCIP_PARAMEMPHASIS, SCIP_PARAMSETTING
+
+        if emphasis != "default":
+            model.setEmphasis(getattr(SCIP_PARAMEMPHASIS, emphasis.upper()))
+        if pcfg.solver_aggressive_heuristics:
+            model.setHeuristics(SCIP_PARAMSETTING.AGGRESSIVE)
+    except (ImportError, AttributeError):
+        # An older PySCIPOpt without these enums simply keeps the default search.
+        pass
+
+
 @dataclass(frozen=True)
 class _ModelArtifacts:
     model: Model
@@ -113,22 +143,7 @@ class StoragePlanningOracle:
         allow_carbon_slack: bool = False,
         use_cache: bool = False,
     ) -> PlanningResult:
-        scenario_tuple = tuple(scenarios)
-        if not scenario_tuple:
-            raise ValueError("At least one scenario is required.")
-        horizon = scenario_tuple[0].horizon
-        if any(s.horizon != horizon for s in scenario_tuple):
-            raise ValueError("All scenarios must have the same horizon.")
-        weight_tuple = tuple(weights) if weights is not None else tuple(
-            1.0 / len(scenario_tuple) for _ in scenario_tuple
-        )
-        if len(weight_tuple) != len(scenario_tuple):
-            raise ValueError("The number of weights must match the scenarios.")
-        total_weight = sum(weight_tuple)
-        if total_weight <= 0:
-            raise ValueError("Scenario weights must have a positive sum.")
-        weight_tuple = tuple(weight / total_weight for weight in weight_tuple)
-
+        scenario_tuple, weight_tuple = self._normalize_job(scenarios, weights)
         cache_key = self._cache_key(
             scenario_tuple,
             weight_tuple,
@@ -458,7 +473,130 @@ class StoragePlanningOracle:
         back keeps a single bootstrap per scenario set across the whole run.
         """
 
-        payload = {
+        payload = self._worker_payload(
+            scenarios,
+            weights,
+            fixed_design,
+            allow_carbon_slack,
+            use_cache,
+            warm_start_values,
+            warm_start_cached,
+        )
+        return self._run_worker(payload)
+
+    def _normalize_job(
+        self,
+        scenarios: Iterable[Scenario],
+        weights: Iterable[float] | None,
+    ) -> tuple[tuple[Scenario, ...], tuple[float, ...]]:
+        scenario_tuple = tuple(scenarios)
+        if not scenario_tuple:
+            raise ValueError("At least one scenario is required.")
+        horizon = scenario_tuple[0].horizon
+        if any(s.horizon != horizon for s in scenario_tuple):
+            raise ValueError("All scenarios must have the same horizon.")
+        weight_tuple = tuple(weights) if weights is not None else tuple(
+            1.0 / len(scenario_tuple) for _ in scenario_tuple
+        )
+        if len(weight_tuple) != len(scenario_tuple):
+            raise ValueError("The number of weights must match the scenarios.")
+        total = sum(weight_tuple)
+        if total <= 0:
+            raise ValueError("Scenario weights must have a positive sum.")
+        return scenario_tuple, tuple(weight / total for weight in weight_tuple)
+
+    def _isolation_active(self) -> bool:
+        """Whether planning solves currently run in a separate process.
+
+        Concurrency is only offered on that path: it is the one that already
+        keeps each solve in its own address space, so running several at once
+        adds no new shared state.
+        """
+
+        return (
+            os.name == "nt"
+            and "torch" in sys.modules
+            and os.environ.get("STORAGE_DFL_SOLVER_WORKER") != "1"
+        )
+
+    def solve_many(
+        self,
+        jobs: Iterable[tuple[Iterable[Scenario], Iterable[float] | None]],
+        *,
+        allow_carbon_slack: bool = False,
+        max_workers: int | None = None,
+    ) -> list[PlanningResult]:
+        """Solve several free-design planning problems, concurrently when possible.
+
+        The samples of one decision-focused epoch are independent, and each solve
+        already runs in its own process, so the only thing serialising them was
+        the loop itself.  Results are returned in the order the jobs were given,
+        so the caller's sample indexing is unchanged.
+
+        Falls back to the ordinary serial path whenever process isolation is not
+        in use, which keeps behaviour identical on platforms that never needed it.
+        """
+
+        normalized = [self._normalize_job(scenarios, weights) for scenarios, weights in jobs]
+        if not normalized:
+            return []
+
+        workers = max_workers if max_workers is not None else self.planning.solver_max_parallel_workers
+        workers = max(1, int(workers))
+        if workers == 1 or len(normalized) == 1 or not self._isolation_active():
+            return [
+                self.solve(scenarios, weights=weights, allow_carbon_slack=allow_carbon_slack)
+                for scenarios, weights in normalized
+            ]
+
+        payloads = []
+        warm_start_keys = []
+        for scenarios, weights in normalized:
+            warm_start_key = self._warm_start_key(scenarios, weights, allow_carbon_slack)
+            warm_start_keys.append(warm_start_key)
+            cached = warm_start_key in self._warm_start_cache
+            payloads.append(
+                self._worker_payload(
+                    scenarios,
+                    weights,
+                    None,
+                    allow_carbon_slack,
+                    False,
+                    self._warm_start_cache.get(warm_start_key),
+                    cached,
+                )
+            )
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Threads, not processes: each worker blocks in subprocess.run, which
+        # releases the GIL, and the real parallelism is between the child SCIP
+        # processes rather than inside this interpreter.
+        with ThreadPoolExecutor(max_workers=min(workers, len(payloads))) as pool:
+            responses = list(pool.map(self._run_worker, payloads))
+
+        # Merged here rather than in the workers so the cache is only mutated by
+        # this thread once every job has finished.
+        results = []
+        for warm_start_key, (result, warm_start_values, computed) in zip(
+            warm_start_keys, responses, strict=True
+        ):
+            if computed:
+                self._warm_start_cache[warm_start_key] = warm_start_values
+            results.append(result)
+        return results
+
+    def _worker_payload(
+        self,
+        scenarios: tuple[Scenario, ...],
+        weights: tuple[float, ...],
+        fixed_design: StorageDesign | None,
+        allow_carbon_slack: bool,
+        use_cache: bool,
+        warm_start_values: dict[str, float] | None,
+        warm_start_cached: bool,
+    ) -> dict:
+        return {
             "feeder": self.feeder,
             "planning": self.planning,
             "costs": self.costs,
@@ -474,6 +612,15 @@ class StoragePlanningOracle:
             "warm_start_values": warm_start_values,
             "warm_start_cached": warm_start_cached,
         }
+
+    def _run_worker(
+        self, payload: dict
+    ) -> tuple[PlanningResult, dict[str, float] | None, bool]:
+        """Run one payload in a clean subprocess.
+
+        Holds no oracle state, so several of these may run concurrently.
+        """
+
         with tempfile.TemporaryDirectory(prefix="storage_dfl_solver_") as directory:
             directory_path = Path(directory)
             input_path = directory_path / "input.pkl"
@@ -588,6 +735,9 @@ class StoragePlanningOracle:
             model.setParam("parallel/maxnthreads", int(pcfg.solver_threads))
         except KeyError:
             pass
+        # Emphasis has to be applied before the heuristics setting, because it
+        # resets the parameters that setHeuristics then overrides.
+        _apply_search_strategy(model, pcfg)
 
         site = {bus: model.addVar(vtype="B", name=f"site[{bus}]") for bus in candidates}
         pcap = {
