@@ -17,10 +17,24 @@ from storage_dfl.dfl.scenario_bo import (
     scenario_features,
     select_supports,
 )
-from storage_dfl.config import CVAEConfig, DFLConfig, load_config
+from storage_dfl.config import (
+    CVAEConfig,
+    DFLConfig,
+    DiffusionConfig,
+    GANConfig,
+    load_config,
+)
 from storage_dfl.dfl.trainer import INFEASIBLE_LOSS, _rank_advantages, _safe_number
 from storage_dfl.planning.model import StoragePlanningOracle
-from storage_dfl.models import ConditionalVAE, train_cvae
+from storage_dfl.models import (
+    ConditionalDiffusion,
+    ConditionalGAN,
+    ConditionalVAE,
+    train_cvae,
+    train_diffusion,
+    train_gan,
+)
+from storage_dfl.models.metrics import precision_recall, wasserstein_1d
 from storage_dfl.network import ieee13_unbalanced_microgrid
 from storage_dfl.planning import PlanningResult, StorageDesign
 from storage_dfl.dfl.scenario_bo import train_scenario_bo
@@ -124,9 +138,173 @@ def test_decision_aware_cvae_loss_runs() -> None:
     )
     assert len(history) == 1
     assert np.isfinite(history[0].loss)
-    assert history[0].beta == 0.001
-    assert history[0].net_peak >= 0.0
-    assert history[0].price_spread >= 0.0
+    assert history[0].metrics["beta"] == 0.001
+    assert history[0].metrics["net_peak"] >= 0.0
+    assert history[0].metrics["price_spread"] >= 0.0
+
+
+def _toy_generator_inputs(horizon: int = 6, scenarios: int = 8):
+    feeder = ieee13_unbalanced_microgrid()
+    pool = make_toy_scenarios(feeder, num_scenarios=scenarios, horizon=horizon, seed=13)
+    codec = ScenarioCodec.fit(pool, feeder)
+    trajectories, contexts = codec.encode_pool(pool)
+    return codec, trajectories, contexts
+
+
+def _shared_generator_config(**overrides) -> CVAEConfig:
+    settings = dict(
+        latent_dim=4,
+        hidden_dim=16,
+        epochs=1,
+        learning_rate=1.0e-3,
+        beta=0.002,
+        ramp_weight=0.05,
+        batch_size=4,
+        kl_warmup_epochs=2,
+    )
+    settings.update(overrides)
+    return CVAEConfig(**settings)
+
+
+def test_every_generator_satisfies_the_dfl_contract() -> None:
+    """decode(encode(x)) must round-trip shapes for all three generators.
+
+    The DFL stage only depends on ``latent_dim``, ``encode`` and ``decode``, so
+    this is the contract that lets a GAN or diffusion model be dropped in without
+    touching the planner.
+    """
+
+    codec, trajectories, contexts = _toy_generator_inputs()
+    config = _shared_generator_config()
+    x = torch.as_tensor(trajectories)
+    c = torch.as_tensor(contexts)
+    models = (
+        ConditionalVAE(
+            trajectory_dim=codec.trajectory_dim,
+            context_dim=codec.context_dim,
+            latent_dim=config.latent_dim,
+            hidden_dim=config.hidden_dim,
+        ),
+        ConditionalGAN(
+            trajectory_dim=codec.trajectory_dim,
+            context_dim=codec.context_dim,
+            latent_dim=config.latent_dim,
+            hidden_dim=config.hidden_dim,
+            critic_hidden_dim=16,
+        ),
+        ConditionalDiffusion(
+            trajectory_dim=codec.trajectory_dim,
+            context_dim=codec.context_dim,
+            latent_dim=config.latent_dim,
+            hidden_dim=config.hidden_dim,
+            timesteps=8,
+            sampling_steps=3,
+        ),
+    )
+    for model in models:
+        model.eval()
+        assert model.latent_dim == config.latent_dim
+        latent, _ = model.encode(x, c)
+        assert latent.shape == (x.shape[0], config.latent_dim)
+        decoded = model.decode(latent, c)
+        assert decoded.shape == x.shape
+        assert torch.isfinite(decoded).all()
+        prior = model.sample_latent(3)
+        assert prior.shape == (3, config.latent_dim)
+        generated = codec.decode_batch(
+            model.decode(prior, c[:3]).detach().numpy(),
+            c[:3].numpy(),
+            name_prefix=f"{model.kind}_test",
+        )
+        assert len(generated) == 3
+
+
+def test_diffusion_projection_preserves_the_noise_scale() -> None:
+    """The projected latent must still look like the noise the sampler expects."""
+
+    model = ConditionalDiffusion(
+        trajectory_dim=120,
+        context_dim=3,
+        latent_dim=8,
+        hidden_dim=16,
+        timesteps=8,
+        sampling_steps=3,
+    )
+    latent = torch.randn(256, 8)
+    noise = model.latent_to_noise(latent)
+    assert noise.shape == (256, 120)
+    # E||x_T||^2 = D is what the reverse process assumes; the sqrt(D/d) factor
+    # restores it after the subspace restriction.
+    assert abs(float(noise.square().sum(dim=1).mean()) - 120.0) < 20.0
+    # Projection then inversion is the identity on the subspace itself.
+    assert torch.allclose(model.noise_to_latent(noise), latent, atol=1.0e-4)
+
+
+def test_generator_trainers_run_and_report_history() -> None:
+    codec, trajectories, contexts = _toy_generator_inputs()
+    config = _shared_generator_config()
+    shared = dict(
+        trajectories=trajectories,
+        contexts=contexts,
+        config=config,
+        horizon=6,
+        device=torch.device("cpu"),
+        seed=5,
+        trajectory_mean=codec.trajectory_mean,
+        trajectory_std=codec.trajectory_std,
+        field_masks=codec.field_masks(),
+    )
+    gan = ConditionalGAN(
+        trajectory_dim=codec.trajectory_dim,
+        context_dim=codec.context_dim,
+        latent_dim=config.latent_dim,
+        hidden_dim=config.hidden_dim,
+        critic_hidden_dim=16,
+    )
+    gan_history = train_gan(
+        gan,
+        gan_config=GANConfig(critic_steps=1, encoder_epochs=1),
+        **shared,
+    )
+    assert len(gan_history) == 2  # one adversarial epoch, one inversion epoch
+    assert all(np.isfinite(record.loss) for record in gan_history)
+    assert gan_history[-1].metrics["phase"] == 1.0
+
+    diffusion = ConditionalDiffusion(
+        trajectory_dim=codec.trajectory_dim,
+        context_dim=codec.context_dim,
+        latent_dim=config.latent_dim,
+        hidden_dim=config.hidden_dim,
+        timesteps=8,
+        sampling_steps=3,
+    )
+    diffusion_history = train_diffusion(
+        diffusion,
+        diffusion_config=DiffusionConfig(timesteps=8, sampling_steps=3),
+        **shared,
+    )
+    assert len(diffusion_history) == 1
+    assert np.isfinite(diffusion_history[0].loss)
+
+
+def test_generator_config_defaults_to_the_cvae() -> None:
+    """Configurations written before generators were pluggable keep working."""
+
+    config = load_config("configs/demo.yaml")
+    assert config.generator.kind == "cvae"
+    assert config.generator.diffusion.latent_mode == "projected"
+
+
+def test_wasserstein_and_precision_recall_detect_collapse() -> None:
+    real = np.random.default_rng(0).normal(size=(40, 5))
+    collapsed = np.zeros((40, 5)) + 0.01
+    faithful = np.random.default_rng(1).normal(size=(40, 5))
+    assert wasserstein_1d(real[:, 0], faithful[:, 0]) < wasserstein_1d(
+        real[:, 0], collapsed[:, 0]
+    )
+    _, collapsed_recall = precision_recall(real, collapsed)
+    _, faithful_recall = precision_recall(real, faithful)
+    assert collapsed_recall < faithful_recall
 
 
 def test_historical_loader_truncates_horizon(tmp_path) -> None:

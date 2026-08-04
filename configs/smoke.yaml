@@ -8,6 +8,8 @@ data:
   horizon: 12
   delta_t_hours: 1.0
 
+# Shared generator training settings. Every generator uses this latent size,
+# width, epoch count and field balance so a wiring check covers all three.
 cvae:
   latent_dim: 4
   hidden_dim: 64
@@ -15,6 +17,17 @@ cvae:
   learning_rate: 0.001
   beta: 0.005
   ramp_weight: 0.10
+
+generator:
+  kind: cvae
+  gan:
+    critic_steps: 1
+    encoder_epochs: 2
+    critic_hidden_dim: 64
+  diffusion:
+    timesteps: 20
+    sampling_steps: 4
+    blocks: 2
 
 dfl:
   num_support_scenarios: 1

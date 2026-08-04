@@ -9,7 +9,7 @@ import torch
 
 from storage_dfl.config import DFLConfig
 from storage_dfl.data import Scenario, ScenarioCodec, ScenarioPool
-from storage_dfl.models import ConditionalVAE
+from storage_dfl.models import ConditionalGenerator
 from storage_dfl.planning import PlanningResult, StoragePlanningOracle
 
 from .trainer import INFEASIBLE_LOSS, resolve_device
@@ -185,7 +185,7 @@ def _representative_scenarios(
 
 @torch.no_grad()
 def _candidate_pool(
-    cvae: ConditionalVAE,
+    cvae: ConditionalGenerator,
     codec: ScenarioCodec,
     observed_pool: ScenarioPool,
     count: int,
@@ -223,7 +223,7 @@ def _initial_parameters(dimension: int, count: int, bound: float, rng: np.random
 
 
 def train_scenario_bo(
-    cvae: ConditionalVAE,
+    cvae: ConditionalGenerator,
     codec: ScenarioCodec,
     observed_pool: ScenarioPool,
     oracle: StoragePlanningOracle,

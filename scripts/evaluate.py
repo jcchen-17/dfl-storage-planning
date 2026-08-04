@@ -1,5 +1,6 @@
 import argparse
 
+from storage_dfl.models import GENERATOR_KINDS
 from storage_dfl.stages import evaluate_stage
 
 
@@ -11,9 +12,19 @@ def main() -> None:
         choices=("reinforce", "scenario_bo"),
         help="Evaluate the checkpoint produced by this DFL method.",
     )
+    parser.add_argument(
+        "--generator",
+        choices=GENERATOR_KINDS,
+        help="Evaluate the checkpoint produced on top of this generator.",
+    )
     args = parser.parse_args()
     print(f"Starting evaluation with {args.config}...", flush=True)
-    result = evaluate_stage(args.config, method_override=args.method)
+    result = evaluate_stage(
+        args.config,
+        method_override=args.method,
+        generator_override=args.generator,
+    )
+    print(f"generator: {result['generator']}")
     print(f"method: {result['method']}")
     planning = result["planning"]
     validation = result["out_of_sample_validation"]

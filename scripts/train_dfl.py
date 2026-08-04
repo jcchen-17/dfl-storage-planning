@@ -1,5 +1,6 @@
 import argparse
 
+from storage_dfl.models import GENERATOR_KINDS
 from storage_dfl.stages import train_dfl_stage
 
 
@@ -11,6 +12,11 @@ def main() -> None:
         choices=("reinforce", "scenario_bo"),
         help="Override dfl.method without editing the YAML file.",
     )
+    parser.add_argument(
+        "--generator",
+        choices=GENERATOR_KINDS,
+        help="Use the support learned on top of this generator's checkpoint.",
+    )
     parser.add_argument("--no-tensorboard", action="store_true")
     args = parser.parse_args()
     print(f"Starting DFL training with {args.config}...", flush=True)
@@ -18,7 +24,9 @@ def main() -> None:
         args.config,
         tensorboard=not args.no_tensorboard,
         method_override=args.method,
+        generator_override=args.generator,
     )
+    print(f"generator: {result['generator']}")
     print(f"method: {result['method']}")
     print(f"device: {result['device']}")
     print(f"epochs: {result['epochs']}")

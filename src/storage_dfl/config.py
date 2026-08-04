@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,78 @@ class CVAEConfig:
     net_load_weight: float = 0.15
     net_peak_weight: float = 0.20
     price_spread_weight: float = 0.20
+
+    def field_weights(self) -> tuple[float, ...]:
+        """Per-field reconstruction weights: P, Q, PV, workload, PUE, price, carbon.
+
+        Every generator reads them through this accessor so a GAN, a diffusion
+        model and the CVAE are all held to the same field balance.
+        """
+
+        return (
+            self.active_load_weight,
+            self.reactive_load_weight,
+            self.pv_weight,
+            self.workload_weight,
+            self.pue_weight,
+            self.price_weight,
+            self.carbon_weight,
+        )
+
+
+@dataclass(frozen=True)
+class GANConfig:
+    """Conditional WGAN-GP settings.
+
+    ``latent_dim``, ``hidden_dim``, ``epochs``, ``batch_size`` and the field
+    weights are shared with the CVAE section so the two models differ only in
+    their training objective.
+    """
+
+    critic_steps: int = 5
+    gradient_penalty: float = 10.0
+    critic_hidden_dim: int = 512
+    critic_learning_rate: float = 2.0e-4
+    generator_learning_rate: float = 2.0e-4
+    adam_beta1: float = 0.5
+    adam_beta2: float = 0.9
+    # A GAN sample has no matching observation, so the decision-relevant
+    # summaries the CVAE preserves per sample are imposed here as batch moments.
+    moment_weight: float = 10.0
+    # Post-hoc inversion phase; the generator is frozen while this runs.
+    encoder_epochs: int = 200
+    encoder_learning_rate: float = 1.0e-3
+    latent_prior_weight: float = 0.01
+
+
+@dataclass(frozen=True)
+class DiffusionConfig:
+    """Conditional DDPM settings with a DDIM sampler.
+
+    ``latent_mode: projected`` confines the initial noise to a subspace of the
+    shared ``cvae.latent_dim`` so ``DirectSupportPolicy`` can search it.
+    ``full`` keeps the unrestricted noise and is only usable for
+    generative-quality measurement, never for the DFL stage.
+    """
+
+    timesteps: int = 400
+    sampling_steps: int = 50
+    beta_schedule: str = "cosine"
+    latent_mode: str = "projected"
+    blocks: int = 3
+    # Bound on the recovered x0, in standardized units. It stabilises both the
+    # sampler and the auxiliary shape term; the data itself never leaves +-5.
+    x_zero_clamp: float = 5.0
+    # The shape term is a Huber loss on scaled summaries, so this multiplies a
+    # quantity of order one against the field-weighted noise objective.
+    physics_weight: float = 0.1
+
+
+@dataclass(frozen=True)
+class GeneratorConfig:
+    kind: str = "cvae"
+    gan: GANConfig = field(default_factory=GANConfig)
+    diffusion: DiffusionConfig = field(default_factory=DiffusionConfig)
 
 
 @dataclass(frozen=True)
@@ -125,10 +197,22 @@ class ExperimentConfig:
     planning: PlanningConfig
     costs: CostConfig
     output_dir: Path
+    # Optional so configurations written before generators became pluggable keep
+    # loading and keep selecting the CVAE.
+    generator: GeneratorConfig = field(default_factory=GeneratorConfig)
 
 
 def _construct(section_type: type, raw: dict[str, Any]) -> Any:
     return section_type(**raw)
+
+
+def _generator_config(raw: dict[str, Any] | None) -> GeneratorConfig:
+    payload = dict(raw or {})
+    return GeneratorConfig(
+        kind=str(payload.get("kind", "cvae")),
+        gan=_construct(GANConfig, dict(payload.get("gan", {}))),
+        diffusion=_construct(DiffusionConfig, dict(payload.get("diffusion", {}))),
+    )
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
@@ -147,4 +231,5 @@ def load_config(path: str | Path) -> ExperimentConfig:
         planning=_construct(PlanningConfig, raw["planning"]),
         costs=_construct(CostConfig, raw["costs"]),
         output_dir=(config_path.parent.parent / raw["output_dir"]).resolve(),
+        generator=_generator_config(raw.get("generator")),
     )

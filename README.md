@@ -88,15 +88,149 @@ apparent-power ratings with a conservative inner-octagon approximation.  The
 smoke model keeps the original quadratic circle, and the pure-flow diagnostic
 verifies that the generated scenarios remain well inside both limits.
 
+## Interchangeable generators
+
+The decision-focused stage treats the generator as a frozen black box and needs
+only three things from it: a `latent_dim`, `decode(latent, context)` and
+`encode(trajectory, context)`.  `ConditionalGenerator` in
+`src/storage_dfl/models/base.py` states that contract, and three models
+implement it:
+
+| kind | objective | `encode` |
+| --- | --- | --- |
+| `cvae` | field-balanced ELBO with shape-preserving terms | amortised posterior mean |
+| `gan` | conditional WGAN-GP plus batch moment matching | post-hoc inversion network fitted against the frozen generator |
+| `diffusion` | field-weighted epsilon matching plus a Huber shape term | deterministic DDIM inversion |
+
+All three read `cvae.latent_dim`, `cvae.hidden_dim`, `cvae.epochs`,
+`cvae.batch_size` and the field weights from the same configuration section, so
+they differ only in training objective and are compared at equal capacity.  The
+`generator` section holds the model-specific settings.
+
+A diffusion model has no learned latent: its free input is the initial noise
+`x_T`, which has the full 5,808-dimensional trajectory size.  `DirectSupportPolicy`
+perturbs the latent isotropically and updates it from a few REINFORCE samples per
+epoch, so that dimension is unusable.  `latent_mode: projected` therefore fixes a
+matrix `P` with orthonormal columns and sets `x_T = sqrt(D/d) P z` with
+`z` in the CVAE's latent dimension; the scale keeps `E||x_T||^2 = D`, so the
+sampler is unchanged.  `latent_mode: full` keeps the unrestricted noise for
+generative-quality measurement only — `train_dfl_stage` rejects it.
+
+Artifacts are scoped by generator, so one output directory holds all three
+comparisons.  The CVAE keeps its historical file names (`cvae.pt`,
+`dfl_support_reinforce.pt`) so existing runs stay readable; other generators get
+a prefix (`gan.pt`, `dfl_support_gan_reinforce.pt`).
+
+## Choosing a generator
+
+The comparison runs in two stages against `configs/generator_compare.yaml`, a
+copy of `configs/demo.yaml` whose only difference is
+`output_dir: outputs/generator_comparison_48h`.  Use it rather than `demo.yaml`:
+retraining a generator rewrites `cvae.pt` and `normalization.json` in the output
+directory, which invalidates every DFL checkpoint already sitting there.
+
+### Stage one: generative quality, no SCIP solves
+
+```powershell
+conda activate storage-dfl
+
+# Train all three generators and score them (minutes on a GPU).
+python scripts/compare_generators.py --config configs/generator_compare.yaml
+
+# Re-score existing checkpoints without retraining, e.g. after a metric change.
+python scripts/compare_generators.py --config configs/generator_compare.yaml --skip-training
+
+# One generator only.
+python scripts/compare_generators.py --config configs/generator_compare.yaml --generators gan
+```
+
+This writes `generator_comparison.json` and `generator_comparison.csv` to the
+output directory: reconstruction error per field, 1-Wasserstein distance on the
+statistics the planner actually prices (peak net load, price spread, carbon and
+workload extremes), energy distance over whole trajectories, net-load
+autocorrelation error, improved precision and recall, and the mass the codec had
+to clip away.
+
+Read `recall` first.  A collapsed GAN scores high precision with near-zero
+recall — plausible samples with no diversity.  Then read the peak-net-load and
+price-spread Wasserstein columns, because those two map directly onto the demand
+charge and the arbitrage value.
+
+Two metric caveats are baked into the implementation and worth knowing:
+
+* Precision and recall are computed on the standardized decision statistics and
+  on a ten-component PCA of the trajectories, never on the raw 5,808-dimensional
+  vectors.  In the raw space every k-nearest-neighbour radius is far smaller
+  than every cross-set distance, so both scores collapse to zero for every model
+  and the metric carries no information at all.
+* `reconstruction_all_fields` is not a fair head-to-head.  The GAN's inversion
+  encoder is fitted for `encoder_epochs` against a frozen generator with no KL
+  penalty, while the CVAE's reconstruction is held back by its KL term.  The
+  distributional columns are fair, because they only use prior samples and never
+  touch an encoder.
+
+To separate a diffusion result from the projected-latent constraint imposed on
+it, `configs/generator_compare_diffusion_full.yaml` re-runs it with
+`latent_mode: full`, and `configs/generator_compare_diffusion_long.yaml` re-runs
+it with six times the epoch budget.  Both write to their own output directories.
+
+### Stage two: downstream decision quality
+
+Only the survivors need to pay for solver time.  `--generator` and `--method`
+are independent, so the two axes multiply: each combination gets its own
+artifacts and none of them overwrite each other.  Omitting `--method` uses
+`dfl.method` from the configuration, which is `reinforce`.
+
+```powershell
+python scripts/train_dfl.py --config configs/generator_compare.yaml --generator cvae --method reinforce
+python scripts/evaluate.py  --config configs/generator_compare.yaml --generator cvae --method reinforce
+
+python scripts/train_dfl.py --config configs/generator_compare.yaml --generator gan  --method reinforce
+python scripts/evaluate.py  --config configs/generator_compare.yaml --generator gan  --method reinforce
+```
+
+Swap in `--method scenario_bo` for the Gaussian-process selector.  The artifact
+tag is the method name for the CVAE and `<generator>_<method>` for every other
+generator, so the CVAE keeps the file names it had before generators became
+pluggable:
+
+| generator | method | DFL checkpoint | evaluation result |
+| --- | --- | --- | --- |
+| `cvae` | `reinforce` | `dfl_support_reinforce.pt` | `result_reinforce.json` |
+| `cvae` | `scenario_bo` | `dfl_support_scenario_bo.pt` | `result_scenario_bo.json` |
+| `gan` | `reinforce` | `dfl_support_gan_reinforce.pt` | `result_gan_reinforce.json` |
+| `gan` | `scenario_bo` | `dfl_support_gan_scenario_bo.pt` | `result_gan_scenario_bo.json` |
+
+The number to compare is `out_of_sample_validation.objective` in each
+`result_*.json`.  That is the verdict: generative fidelity and decision quality
+do not have to agree, and a generator that wins stage one but loses stage two is
+itself evidence for the decision-focused formulation, not a failed experiment.
+
+Comparing generators and comparing DFL methods are separate questions, so vary
+one axis at a time.  Pick the generator with `--method reinforce` held fixed,
+then run `scenario_bo` on the winner as the method ablation.  Filling the whole
+2x2 costs four full solver runs and answers neither question more sharply.
+
+Any single run is one seed.  The REINFORCE variance is large enough to reorder
+the two generators, so repeat with several `seed` values before reporting.
+
 ## Train
 
 Activate the project environment and run from the repository root:
 
 ```powershell
 conda activate storage-dfl
-python scripts/train_cvae.py --config configs/demo.yaml
+python scripts/train_generator.py --config configs/demo.yaml
 python scripts/train_dfl.py --config configs/demo.yaml
 python scripts/evaluate.py --config configs/demo.yaml
+```
+
+Any stage takes `--generator`:
+
+```powershell
+python scripts/train_generator.py --config configs/demo.yaml --generator gan
+python scripts/train_dfl.py --config configs/demo.yaml --generator gan
+python scripts/evaluate.py --config configs/demo.yaml --generator gan
 ```
 
 `configs/demo.yaml` is now the historical three-phase experiment despite its

@@ -1,4 +1,4 @@
-seed: 7
+﻿seed: 7
 
 data:
   dataset_path: data/processed/ieee13_smartds_dfl/dfl_training_windows_48h_price_regimes.npz
@@ -14,7 +14,7 @@ data:
 cvae:
   latent_dim: 64
   hidden_dim: 512
-  epochs: 250
+  epochs: 1500
   learning_rate: 0.001
   beta: 0.002
   ramp_weight: 0.05
@@ -143,4 +143,8 @@ costs:
   shedding_dollars_per_mwh: 10000.0
   validation_carbon_slack_dollars: 100000.0
 
-output_dir: outputs/ieee13_smartds_layered_storage_calibrated_48h
+# Isolated from the calibrated run so retraining the generators cannot overwrite
+# its cvae.pt, normalization.json or DFL checkpoints.
+output_dir: outputs/generator_comparison_diffusion_long_48h
+
+

@@ -22,7 +22,14 @@ from storage_dfl.dfl import (
     train_direct_generator,
     train_scenario_bo,
 )
-from storage_dfl.models import ConditionalVAE, train_cvae
+from storage_dfl.models import (
+    GENERATOR_KINDS,
+    ConditionalGenerator,
+    build_generator,
+    generator_from_checkpoint,
+    save_generator,
+    train_generator,
+)
 from storage_dfl.network import Feeder, ieee13_unbalanced_microgrid
 from storage_dfl.planning import StoragePlanningOracle
 
@@ -33,7 +40,16 @@ class ArtifactPaths:
 
     @property
     def cvae_checkpoint(self) -> Path:
+        """Legacy CVAE checkpoint path, kept readable for pre-existing runs."""
         return self.root / "cvae.pt"
+
+    def generator_checkpoint_for(self, kind: str) -> Path:
+        # The CVAE keeps its historical file name so runs produced before other
+        # generators existed can still be evaluated without retraining.
+        return self.cvae_checkpoint if kind == "cvae" else self.root / f"{kind}.pt"
+
+    def generator_json_for(self, stem: str, kind: str) -> Path:
+        return self.root / f"{kind}_{stem}.json"
 
     @property
     def dfl_checkpoint(self) -> Path:
@@ -123,27 +139,41 @@ def _load_codec(paths: ArtifactPaths, feeder: Feeder) -> ScenarioCodec:
     return ScenarioCodec.from_normalization_dict(_read_json(paths.normalization), feeder)
 
 
-def _load_cvae(paths: ArtifactPaths, device: torch.device) -> ConditionalVAE:
-    checkpoint = _load_torch(paths.cvae_checkpoint, device)
-    model = ConditionalVAE(
-        trajectory_dim=int(checkpoint["trajectory_dim"]),
-        context_dim=int(checkpoint["context_dim"]),
-        latent_dim=int(checkpoint["latent_dim"]),
-        hidden_dim=int(checkpoint["hidden_dim"]),
+def _apply_generator_override(
+    config: ExperimentConfig,
+    generator_override: str | None,
+) -> ExperimentConfig:
+    if generator_override is None:
+        return config
+    if generator_override not in GENERATOR_KINDS:
+        raise ValueError(f"generator_override must be one of {GENERATOR_KINDS}.")
+    return replace(
+        config, generator=replace(config.generator, kind=generator_override)
     )
-    model.load_state_dict(checkpoint["state_dict"])
-    model.to(device).eval()
-    for parameter in model.parameters():
-        parameter.requires_grad_(False)
-    return model
 
 
-def train_cvae_stage(
+def load_generator(
+    paths: ArtifactPaths,
+    kind: str,
+    device: torch.device,
+) -> ConditionalGenerator:
+    checkpoint = _load_torch(paths.generator_checkpoint_for(kind), device)
+    stored_kind = str(checkpoint.get("kind", "cvae"))
+    if stored_kind != kind:
+        raise RuntimeError(
+            f"Requested generator {kind!r}, but the checkpoint holds {stored_kind!r}."
+        )
+    return generator_from_checkpoint(checkpoint, device)
+
+
+def train_generator_stage(
     config_path: str | Path,
     *,
     tensorboard: bool = True,
+    generator_override: str | None = None,
 ) -> dict:
-    config = load_config(config_path)
+    config = _apply_generator_override(load_config(config_path), generator_override)
+    kind = config.generator.kind
     paths = ArtifactPaths(config.output_dir)
     paths.root.mkdir(parents=True, exist_ok=True)
     np.random.seed(config.seed)
@@ -152,22 +182,15 @@ def train_cvae_stage(
     codec = ScenarioCodec.fit(observed_pool, feeder)
     trajectories, contexts = codec.encode_pool(observed_pool)
     device = resolve_device(config.dfl.device)
-    model = ConditionalVAE(
-        trajectory_dim=codec.trajectory_dim,
-        context_dim=codec.context_dim,
-        latent_dim=config.cvae.latent_dim,
-        hidden_dim=config.cvae.hidden_dim,
-    )
-    writer = _summary_writer(paths.tensorboard / "cvae", tensorboard, config)
+    model = build_generator(config, codec.trajectory_dim, codec.context_dim)
+    writer = _summary_writer(paths.tensorboard / kind, tensorboard, config)
     try:
-        history = train_cvae(
+        history = train_generator(
             model,
             trajectories,
             contexts,
-            config.cvae,
-            horizon=config.data.horizon,
-            device=device,
-            seed=config.seed,
+            config,
+            device,
             trajectory_mean=codec.trajectory_mean,
             trajectory_std=codec.trajectory_std,
             field_masks=codec.field_masks(),
@@ -177,32 +200,58 @@ def train_cvae_stage(
         if writer is not None:
             writer.close()
 
-    torch.save(
-        {
-            "state_dict": model.state_dict(),
-            "trajectory_dim": codec.trajectory_dim,
-            "context_dim": codec.context_dim,
-            "latent_dim": config.cvae.latent_dim,
-            "hidden_dim": config.cvae.hidden_dim,
-        },
-        paths.cvae_checkpoint,
-    )
+    checkpoint_path = paths.generator_checkpoint_for(kind)
+    save_generator(model, checkpoint_path)
+    # Every generator shares one normalization, so the codec stays interchangeable
+    # and generated scenarios from different models remain directly comparable.
     _write_json(paths.normalization, codec.normalization_dict())
-    _write_json(paths.root / "cvae_history.json", [asdict(record) for record in history])
+    _write_json(
+        paths.generator_json_for("history", kind),
+        [asdict(record) for record in history],
+    )
     payload = {
+        "generator": kind,
         "device": str(device),
         "dataset": str(config.data.dataset_path),
         "split": config.data.train_split,
         "scenarios": len(observed_pool.scenarios),
         "trajectory_dim": codec.trajectory_dim,
+        "latent_dim": model.latent_dim,
         "epochs": len(history),
         "initial_loss": history[0].loss,
         "final_loss": history[-1].loss,
         "final_metrics": asdict(history[-1]),
-        "checkpoint": str(paths.cvae_checkpoint),
+        "checkpoint": str(checkpoint_path),
     }
-    _write_json(paths.root / "cvae_result.json", payload)
+    _write_json(paths.generator_json_for("result", kind), payload)
     return payload
+
+
+def train_cvae_stage(
+    config_path: str | Path,
+    *,
+    tensorboard: bool = True,
+    generator_override: str | None = None,
+) -> dict:
+    """Backward-compatible alias for :func:`train_generator_stage`."""
+
+    return train_generator_stage(
+        config_path,
+        tensorboard=tensorboard,
+        generator_override=generator_override,
+    )
+
+
+def _method_tag(config: ExperimentConfig) -> str:
+    """Artifact suffix identifying both the generator and the DFL method.
+
+    The CVAE keeps the bare method name so runs made before other generators
+    existed are not orphaned; other generators get a prefixed tag so a GAN run
+    never overwrites a CVAE run in the same output directory.
+    """
+
+    kind = config.generator.kind
+    return config.dfl.method if kind == "cvae" else f"{kind}_{config.dfl.method}"
 
 
 def train_dfl_stage(
@@ -210,12 +259,14 @@ def train_dfl_stage(
     *,
     tensorboard: bool = True,
     method_override: str | None = None,
+    generator_override: str | None = None,
 ) -> dict:
-    config = load_config(config_path)
+    config = _apply_generator_override(load_config(config_path), generator_override)
     if method_override is not None:
         if method_override not in {"reinforce", "scenario_bo"}:
             raise ValueError("method_override must be 'reinforce' or 'scenario_bo'.")
         config = replace(config, dfl=replace(config.dfl, method=method_override))
+    tag = _method_tag(config)
     paths = ArtifactPaths(config.output_dir)
     paths.root.mkdir(parents=True, exist_ok=True)
     np.random.seed(config.seed)
@@ -223,11 +274,16 @@ def train_dfl_stage(
     feeder, observed_pool = _experiment_data(config, config.data.validation_split)
     codec = _load_codec(paths, feeder)
     device = resolve_device(config.dfl.device)
-    cvae = _load_cvae(paths, device)
+    cvae = load_generator(paths, config.generator.kind, device)
+    if cvae.latent_dim > codec.trajectory_dim // 2:
+        # A diffusion model in ``latent_mode: full`` lands here. Its latent is the
+        # whole trajectory, which the score-function policy cannot search.
+        raise RuntimeError(
+            f"Generator {cvae.kind!r} exposes a {cvae.latent_dim}-dimensional latent, "
+            "which is too large for the DFL policy. Use a projected latent."
+        )
     oracle = StoragePlanningOracle(feeder, config.planning, config.costs, config.data)
-    writer = _summary_writer(
-        paths.tensorboard / f"dfl_{config.dfl.method}", tensorboard, config
-    )
+    writer = _summary_writer(paths.tensorboard / f"dfl_{tag}", tensorboard, config)
     policy: DirectSupportPolicy | None = None
     support_source_names: list[str] = []
     try:
@@ -288,6 +344,7 @@ def train_dfl_stage(
 
     checkpoint = {
         "method": config.dfl.method,
+        "generator": config.generator.kind,
         "support_count": config.dfl.num_support_scenarios,
         "latent_dim": cvae.latent_dim,
         "support_latent": torch.as_tensor(result.support_latent),
@@ -301,10 +358,10 @@ def train_dfl_stage(
         checkpoint["candidate_source_names"] = list(result.candidate_source_names)
         checkpoint["selector_feature_names"] = list(result.feature_names)
         checkpoint["selector_parameters"] = torch.as_tensor(result.best_parameters)
-    dfl_checkpoint = paths.dfl_checkpoint_for(config.dfl.method)
+    dfl_checkpoint = paths.dfl_checkpoint_for(tag)
     torch.save(checkpoint, dfl_checkpoint)
     _write_json(
-        paths.dfl_json_for("dfl_history", config.dfl.method),
+        paths.dfl_json_for("dfl_history", tag),
         result.history_as_dicts(),
     )
     payload = {
@@ -312,6 +369,7 @@ def train_dfl_stage(
         "split": config.data.validation_split,
         "validation_scenarios": len(observed_pool.scenarios),
         "method": config.dfl.method,
+        "generator": config.generator.kind,
         "epochs": len(result.history),
         "scenario_weights": list(result.scenario_weights),
         "support_source_names": checkpoint["support_source_names"],
@@ -321,7 +379,7 @@ def train_dfl_stage(
     }
     if config.dfl.method == "scenario_bo":
         payload["finalist_evaluations"] = list(result.finalist_evaluations)
-    _write_json(paths.dfl_json_for("dfl_result", config.dfl.method), payload)
+    _write_json(paths.dfl_json_for("dfl_result", tag), payload)
     return payload
 
 
@@ -401,12 +459,14 @@ def evaluate_stage(
     config_path: str | Path,
     *,
     method_override: str | None = None,
+    generator_override: str | None = None,
 ) -> dict:
-    config = load_config(config_path)
+    config = _apply_generator_override(load_config(config_path), generator_override)
     if method_override is not None:
         if method_override not in {"reinforce", "scenario_bo"}:
             raise ValueError("method_override must be 'reinforce' or 'scenario_bo'.")
         config = replace(config, dfl=replace(config.dfl, method=method_override))
+    tag = _method_tag(config)
     paths = ArtifactPaths(config.output_dir)
     feeder, observed_pool = _experiment_data(config, config.data.test_split)
     codec = _load_codec(paths, feeder)
@@ -416,8 +476,8 @@ def evaluate_stage(
     )
     evaluation_pool = ScenarioPool(observed_pool.subset(evaluation_indices.tolist()))
     device = resolve_device(config.dfl.device)
-    cvae = _load_cvae(paths, device)
-    checkpoint_path = paths.dfl_checkpoint_for(config.dfl.method)
+    cvae = load_generator(paths, config.generator.kind, device)
+    checkpoint_path = paths.dfl_checkpoint_for(tag)
     # Read old runs when no method-scoped checkpoint has been created yet.
     if not checkpoint_path.exists() and paths.dfl_checkpoint.exists():
         checkpoint_path = paths.dfl_checkpoint
@@ -427,6 +487,12 @@ def evaluate_stage(
         raise RuntimeError(
             f"Requested DFL method {config.dfl.method!r}, but checkpoint "
             f"{checkpoint_path} contains {checkpoint_method!r}. Train that method first."
+        )
+    checkpoint_generator = str(checkpoint.get("generator", "cvae"))
+    if checkpoint_generator != config.generator.kind:
+        raise RuntimeError(
+            f"Requested generator {config.generator.kind!r}, but checkpoint "
+            f"{checkpoint_path} was trained with {checkpoint_generator!r}."
         )
     latent = checkpoint["support_latent"].to(device=device, dtype=torch.float32)
     conditions = checkpoint["support_conditions"].to(device=device, dtype=torch.float32)
@@ -457,6 +523,7 @@ def evaluate_stage(
         )
     payload = {
         "method": checkpoint.get("method", "reinforce"),
+        "generator": checkpoint_generator,
         "device": str(device),
         "test_split": config.data.test_split,
         "test_scenarios_evaluated": len(evaluation_pool.scenarios),
@@ -471,9 +538,9 @@ def evaluate_stage(
         "planning": planning.to_dict(),
         "out_of_sample_validation": validation.to_dict(),
     }
-    _write_json(paths.dfl_json_for("result", config.dfl.method), payload)
+    _write_json(paths.dfl_json_for("result", tag), payload)
     _write_trajectories(
-        paths.root / f"scenario_trajectories_{config.dfl.method}.csv",
+        paths.root / f"scenario_trajectories_{tag}.csv",
         evaluation_pool,
         generated,
         weights,

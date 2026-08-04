@@ -10,7 +10,7 @@ import torch
 from storage_dfl.config import DFLConfig
 from storage_dfl.data import Scenario, ScenarioCodec, ScenarioPool
 from storage_dfl.dfl.support import DirectSupportPolicy
-from storage_dfl.models import ConditionalVAE
+from storage_dfl.models import ConditionalGenerator
 from storage_dfl.planning import PlanningResult, StoragePlanningOracle
 
 
@@ -56,7 +56,7 @@ def resolve_device(requested: str) -> torch.device:
 
 @torch.no_grad()
 def _decode_support(
-    cvae: ConditionalVAE,
+    cvae: ConditionalGenerator,
     codec: ScenarioCodec,
     latent: torch.Tensor,
     support_conditions: torch.Tensor,
@@ -122,7 +122,7 @@ def _rank_advantages(losses: np.ndarray) -> np.ndarray:
 
 def train_direct_generator(
     policy: DirectSupportPolicy,
-    cvae: ConditionalVAE,
+    cvae: ConditionalGenerator,
     codec: ScenarioCodec,
     observed_pool: ScenarioPool,
     oracle: StoragePlanningOracle,

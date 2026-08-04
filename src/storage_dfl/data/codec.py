@@ -99,6 +99,12 @@ class ScenarioCodec:
         )
         return time_major.reshape(-1).astype(np.float32)
 
+    @classmethod
+    def pack(cls, scenario: Scenario) -> np.ndarray:
+        """Public packing, used to measure how much clipping a sample needed."""
+
+        return cls._pack(scenario)
+
     @property
     def trajectory_dim(self) -> int:
         return int(self.trajectory_mean.size)

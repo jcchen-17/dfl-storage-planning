@@ -3,18 +3,33 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from storage_dfl.stages import evaluate_stage, train_cvae_stage, train_dfl_stage
+from storage_dfl.models import GENERATOR_KINDS
+from storage_dfl.stages import evaluate_stage, train_dfl_stage, train_generator_stage
 
 
-def run(config_path: str | Path, *, tensorboard: bool = True) -> dict:
-    cvae = train_cvae_stage(config_path, tensorboard=tensorboard)
-    print(f"CVAE complete: loss {cvae['initial_loss']:.6f} -> {cvae['final_loss']:.6f}")
-    dfl = train_dfl_stage(config_path, tensorboard=tensorboard)
+def run(
+    config_path: str | Path,
+    *,
+    tensorboard: bool = True,
+    generator: str | None = None,
+) -> dict:
+    trained = train_generator_stage(
+        config_path, tensorboard=tensorboard, generator_override=generator
+    )
+    print(
+        f"{trained['generator']} complete: "
+        f"loss {trained['initial_loss']:.6f} -> {trained['final_loss']:.6f}"
+    )
+    dfl = train_dfl_stage(
+        config_path, tensorboard=tensorboard, generator_override=generator
+    )
     print(f"DFL complete: weights {dfl['scenario_weights']}")
-    result = evaluate_stage(config_path)
+    result = evaluate_stage(config_path, generator_override=generator)
     site = result["planning"]["design"]["site"]
     installed = [bus for bus, value in site.items() if value > 0]
-    print("CVAE + decision-focused scenario-selection pipeline completed")
+    print(
+        f"{trained['generator']} + decision-focused scenario-selection pipeline completed"
+    )
     print(f"installed buses: {installed}")
     print(f"planning objective: {result['planning']['objective']:.2f}")
     print(f"validation objective: {result['out_of_sample_validation']['objective']:.2f}")
@@ -25,12 +40,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/demo.yaml", help="YAML configuration path")
     parser.add_argument("--no-tensorboard", action="store_true", help="Disable TensorBoard logging")
+    parser.add_argument(
+        "--generator",
+        choices=GENERATOR_KINDS,
+        help="Override generator.kind for every stage of the run",
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    run(args.config, tensorboard=not args.no_tensorboard)
+    run(args.config, tensorboard=not args.no_tensorboard, generator=args.generator)
 
 
 if __name__ == "__main__":
