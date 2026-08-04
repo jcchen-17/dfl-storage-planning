@@ -64,35 +64,74 @@ def describe(path: Path) -> dict[str, str]:
     return fields
 
 
+def find_installation() -> list[str]:
+    """Standalone Gurobi installs, which carry their own version number."""
+
+    found = []
+    home = os.environ.get("GUROBI_HOME")
+    if home:
+        found.append(f"GUROBI_HOME = {home}")
+    for drive in ("C:", "D:", "E:", "F:"):
+        for path in Path(f"{drive}/").glob("gurobi*"):
+            if path.is_dir():
+                found.append(str(path))
+    for name in ("gurobi_cl", "gurobi_cl.exe"):
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            if entry and (Path(entry) / name).is_file():
+                found.append(f"{name} on PATH at {entry}")
+    return found
+
+
 def main() -> None:
     print("=" * 68)
     print("Gurobi availability")
     print("=" * 68)
 
-    try:
-        import gurobipy as gp
-    except ImportError:
-        print("gurobipy    : NOT INSTALLED")
-        print("\nInstall it with `python -m pip install gurobipy==<major>.*`,")
-        print("matching the major version of the license you hold.")
-        return
-
-    library_version = gp.gurobi.version()
-    print(f"gurobipy    : {'.'.join(map(str, library_version))}")
+    # The license scan runs first and unconditionally: when gurobipy is missing,
+    # the license version is exactly what decides which gurobipy to install.
     print(f"GRB_LICENSE_FILE: {os.environ.get('GRB_LICENSE_FILE', '(not set)')}")
-
     licenses = find_license_files()
-    print(f"\nlicense files found: {len(licenses)}")
+    print(f"license files found: {len(licenses)}")
+    license_versions = []
     for path in licenses:
         fields = describe(path)
         version = fields.get("VERSION", "?")
+        if version.isdigit():
+            license_versions.append(int(version))
         print(f"\n  {path}")
         for key in ("TYPE", "VERSION", "EXPIRATION", "HOSTNAME", "HOSTID", "CORES"):
             if key in fields:
                 print(f"    {key:<11} {fields[key]}")
-        if version.isdigit() and int(version) < library_version[0]:
-            print(f"    -> MISMATCH: covers Gurobi {version}, but gurobipy is "
-                  f"{library_version[0]}. Install gurobipy=={version}.* instead.")
+
+    installations = find_installation()
+    if installations:
+        print("\nstandalone installs:")
+        for entry in installations:
+            print(f"  {entry}")
+
+    print()
+    try:
+        import gurobipy as gp
+    except ImportError:
+        print("gurobipy    : NOT INSTALLED")
+        if license_versions:
+            newest = max(license_versions)
+            print(f"\nThe license above covers Gurobi {newest}. A license covers its")
+            print("own version and earlier ones, never later ones, so install:")
+            print(f"    python -m pip install \"gurobipy=={newest}.*\"")
+        else:
+            print("\nNo license file was found either. Request a free academic license")
+            print("at https://www.gurobi.com/academia/, activate it with grbgetkey on")
+            print("the university network, then install a matching gurobipy.")
+        return
+
+    library_version = gp.gurobi.version()
+    print(f"gurobipy    : {'.'.join(map(str, library_version))}")
+    for version in license_versions:
+        if version < library_version[0]:
+            print(f"  -> MISMATCH: a license for Gurobi {version} cannot run gurobipy "
+                  f"{library_version[0]}.")
+            print(f"     python -m pip install \"gurobipy=={version}.*\"")
 
     print("\n" + "-" * 68)
     print(f"solving a {PROBE_VARIABLES}-variable model to test the real limit")
