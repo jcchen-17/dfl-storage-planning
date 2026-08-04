@@ -22,6 +22,46 @@ from storage_dfl.planning.results import (
 )
 
 
+SOLVER_BACKENDS = ("scip", "gurobi")
+
+
+def _variable_name(variable) -> str:
+    """Variable name across backends.
+
+    PySCIPOpt spells it ``name`` and gurobipy spells it ``VarName``.  Warm starts
+    are transferred between models by name, so this has to work for both or the
+    bootstrap silently matches nothing and every solve starts cold.
+    """
+
+    name = getattr(variable, "name", None)
+    if isinstance(name, str):
+        return name
+    return str(variable.VarName)
+
+
+def _new_model(name: str, backend: str):
+    """Return ``(model, quicksum)`` for the requested backend.
+
+    The Gurobi path returns a facade exposing the same methods the builder calls
+    on a PySCIPOpt model, so the builder needs no knowledge of which solver it is
+    talking to.
+    """
+
+    if backend not in SOLVER_BACKENDS:
+        raise ValueError(f"solver_backend must be one of {SOLVER_BACKENDS}, got {backend!r}.")
+    if backend == "scip":
+        return Model(name), quicksum
+    from storage_dfl.planning import gurobi_backend
+
+    if not gurobi_backend.is_available():
+        raise RuntimeError(
+            "solver_backend is 'gurobi' but gurobipy is not installed. "
+            "Run `python -m pip install gurobipy` and activate a license large "
+            "enough for this model; the restricted license caps at 2000 variables."
+        )
+    return gurobi_backend.GurobiModel(name), gurobi_backend.quicksum
+
+
 _EMPHASIS_SETTINGS = ("default", "feasibility", "optimality", "hardlp", "counter")
 
 
@@ -40,6 +80,10 @@ def _apply_search_strategy(model: Model, pcfg: PlanningConfig) -> None:
         raise ValueError(
             f"solver_emphasis must be one of {_EMPHASIS_SETTINGS}, got {emphasis!r}."
         )
+    delegate = getattr(model, "apply_search_strategy", None)
+    if delegate is not None:
+        delegate(emphasis, bool(pcfg.solver_aggressive_heuristics))
+        return
     try:
         from pyscipopt import SCIP_PARAMEMPHASIS, SCIP_PARAMSETTING
 
@@ -368,7 +412,7 @@ class StoragePlanningOracle:
             bootstrap.model.freeProb()
             return None
         values = {
-            variable.name: float(
+            _variable_name(variable): float(
                 bootstrap.model.getSolVal(bootstrap_solution, variable)
             )
             for variable in bootstrap.model.getVars()
@@ -396,7 +440,9 @@ class StoragePlanningOracle:
         if bootstrap_values is None or not self._warm_start_supported(fixed_design):
             return False
         target_variables = tuple(target_model.getVars())
-        target_by_name = {variable.name: variable for variable in target_variables}
+        target_by_name = {
+            _variable_name(variable): variable for variable in target_variables
+        }
         warm_start = target_model.createSol()
         # The storage-disabled bootstrap omits charge/discharge, inventory and
         # carbon-vintage variables that exist in the storage-enabled target.
@@ -721,11 +767,25 @@ class StoragePlanningOracle:
             for bus, phase in node_phases
         }
 
-        model = Model("dfl_batch_resolved_storage_planning")
+        # Both backends build this model through the same 1,500 lines below, so a
+        # difference between them can only come from the solver, never from a
+        # divergent formulation.
+        model, quicksum = _new_model(
+            "dfl_batch_resolved_storage_planning", pcfg.solver_backend
+        )
+        if pcfg.solver_backend == "gurobi" and pcfg.carbon_formulation == "exact":
+            # The exact carbon identity is a bilinear equality, which Gurobi only
+            # accepts once nonconvex quadratics are enabled.
+            model.setNonconvex(True)
         if not pcfg.verbose_solver:
             model.hideOutput()
         model.setParam("limits/time", float(pcfg.solver_time_limit_seconds))
         model.setParam("limits/gap", float(pcfg.solver_relative_gap))
+        if float(pcfg.solver_memory_limit_mb) > 0.0:
+            # Without this SCIP aborts the process when an allocation fails, which
+            # takes the whole run with it. Bounded, it stops cleanly and keeps the
+            # incumbent it already had.
+            model.setParam("limits/memory", float(pcfg.solver_memory_limit_mb))
         if fixed_design is not None and pcfg.carbon_formulation == "exact":
             # SCIP can incorrectly cut off the fixed-design problem while
             # eliminating zero-capacity bilinear vintage equations. Keeping the

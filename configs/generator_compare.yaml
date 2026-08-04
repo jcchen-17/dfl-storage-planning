@@ -146,7 +146,11 @@ planning:
   # Samples within one DFL epoch are independent and each already solves in its
   # own process, so this is the main lever on wall-clock time. Keep it at or
   # below the physical core count.
-  solver_max_parallel_workers: 4
+  solver_max_parallel_workers: 2
+  # Per-solve budget. Concurrency multiplies it, so keep
+  # workers x memory below usable RAM. Exceeding it yields a 'memorylimit'
+  # status with the incumbent kept, rather than an aborted process.
+  solver_memory_limit_mb: 3500
   verbose_solver: false
   # Budget for the no-storage bootstrap that seeds each solve; 0 selects
   # max(60 s, 30% of solver_time_limit_seconds) = 90 s here. The bootstrap is

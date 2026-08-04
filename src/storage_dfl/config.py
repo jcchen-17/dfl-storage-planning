@@ -210,7 +210,21 @@ class PlanningConfig:
     # Planning solves that may run concurrently in isolated workers. Samples
     # within one DFL epoch are independent, so this is the main lever on
     # wall-clock time. Zero selects one worker, i.e. the original serial path.
+    # Each worker holds a full copy of the model, so memory scales with this just
+    # as much as speed does; a layered-carbon model at K=3 is large enough that
+    # four concurrent workers can exhaust a 16 GB machine.
     solver_max_parallel_workers: int = 1
+    # Which solver builds and solves the planning problem. Under the production
+    # formulation the model is a pure MILP, which is where the gap between
+    # solvers is widest, so this is worth having as a switch. 'gurobi' needs
+    # gurobipy plus a license large enough for the model; the bundled restricted
+    # license stops at 2000 variables and this model has tens of thousands.
+    solver_backend: str = "scip"
+    # Per-solve memory budget in MB; zero leaves SCIP unbounded. Without a budget
+    # SCIP aborts the entire process on allocation failure and the run dies. With
+    # one it stops at 'memorylimit' and returns its incumbent, which the pipeline
+    # can still use. Budget roughly (usable RAM) / solver_max_parallel_workers.
+    solver_memory_limit_mb: float = 0.0
 
 
 @dataclass(frozen=True)
