@@ -22,7 +22,7 @@ from storage_dfl.planning.results import (
 )
 
 
-SOLVER_BACKENDS = ("scip", "gurobi")
+SOLVER_BACKENDS = ("scip", "gurobi", "highs")
 
 
 def _variable_name(variable) -> str:
@@ -42,24 +42,56 @@ def _variable_name(variable) -> str:
 def _new_model(name: str, backend: str):
     """Return ``(model, quicksum)`` for the requested backend.
 
-    The Gurobi path returns a facade exposing the same methods the builder calls
+    The non-SCIP paths return facades exposing the same methods the builder calls
     on a PySCIPOpt model, so the builder needs no knowledge of which solver it is
-    talking to.
+    talking to and every backend is guaranteed to build the same model.
     """
 
     if backend not in SOLVER_BACKENDS:
         raise ValueError(f"solver_backend must be one of {SOLVER_BACKENDS}, got {backend!r}.")
     if backend == "scip":
         return Model(name), quicksum
-    from storage_dfl.planning import gurobi_backend
+    if backend == "gurobi":
+        from storage_dfl.planning import gurobi_backend
 
-    if not gurobi_backend.is_available():
+        if not gurobi_backend.is_available():
+            raise RuntimeError(
+                "solver_backend is 'gurobi' but gurobipy is not installed. "
+                "Run `python -m pip install gurobipy` and activate a license large "
+                "enough for this model; the restricted license caps at 2000 variables."
+            )
+        return gurobi_backend.GurobiModel(name), gurobi_backend.quicksum
+    from storage_dfl.planning import highs_backend
+
+    if not highs_backend.is_available():
         raise RuntimeError(
-            "solver_backend is 'gurobi' but gurobipy is not installed. "
-            "Run `python -m pip install gurobipy` and activate a license large "
-            "enough for this model; the restricted license caps at 2000 variables."
+            "solver_backend is 'highs' but highspy is not installed. "
+            "Run `python -m pip install highspy`."
         )
-    return gurobi_backend.GurobiModel(name), gurobi_backend.quicksum
+    return highs_backend.HighsModel(name), highs_backend.quicksum
+
+
+def _check_backend_supports(pcfg: PlanningConfig) -> None:
+    """Reject combinations a backend cannot represent.
+
+    HiGHS is linear only. Letting it build the nonconvex carbon identity or the
+    quadratic flow circles would either fail deep inside the builder or, worse,
+    drop the constraints and return a confidently wrong design.
+    """
+
+    if pcfg.solver_backend != "highs":
+        return
+    unsupported = []
+    if pcfg.carbon_formulation == "exact":
+        unsupported.append("carbon_formulation: exact (nonconvex bilinear equalities)")
+    if pcfg.flow_limit_formulation == "quadratic":
+        unsupported.append("flow_limit_formulation: quadratic (second-order cones)")
+    if unsupported:
+        raise ValueError(
+            "The HiGHS backend solves linear models only, but this configuration "
+            "needs " + "; ".join(unsupported) + ". Use solver_backend 'scip' or "
+            "'gurobi', or switch to the mccormick/polygon formulation."
+        )
 
 
 _EMPHASIS_SETTINGS = ("default", "feasibility", "optimality", "hardlp", "counter")
@@ -767,9 +799,10 @@ class StoragePlanningOracle:
             for bus, phase in node_phases
         }
 
-        # Both backends build this model through the same 1,500 lines below, so a
-        # difference between them can only come from the solver, never from a
+        # Every backend builds this model through the same 1,500 lines below, so
+        # a difference between them can only come from the solver, never from a
         # divergent formulation.
+        _check_backend_supports(pcfg)
         model, quicksum = _new_model(
             "dfl_batch_resolved_storage_planning", pcfg.solver_backend
         )

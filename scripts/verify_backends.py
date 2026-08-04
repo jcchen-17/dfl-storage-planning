@@ -28,7 +28,8 @@ scenarios, weights, labels = select_scenarios("kmeans", pool, codec, K, seed=0)
 print(f"K={K} scenarios: {labels}\n", flush=True)
 
 results = {}
-for backend in ("scip", "gurobi"):
+BACKENDS = tuple(sys.argv[3].split(",")) if len(sys.argv) > 3 else ("scip", "gurobi")
+for backend in BACKENDS:
     planning = replace(
         config.planning,
         solver_backend=backend,
@@ -36,6 +37,8 @@ for backend in ("scip", "gurobi"):
         warm_start_time_limit_seconds=60.0,
         # Serial: this is a correctness check, not a timing run.
         solver_max_parallel_workers=1,
+        # HiGHS has no memory-limit option and raises if one is set.
+        solver_memory_limit_mb=0.0,
     )
     oracle = StoragePlanningOracle(
         feeder, planning, config.costs, config.data, config.data_center
@@ -72,6 +75,7 @@ for backend in ("scip", "gurobi"):
         "energy": round(energy, 4),
         "seconds": seconds,
         "gap": min(float(result.relative_gap), 9.99),
+        "design": result.design,
     }
     print(
         f"{backend:<7} | {size[0]:,} vars {size[1]:,} conss | {result.status:<12} "
@@ -81,11 +85,12 @@ for backend in ("scip", "gurobi"):
     )
 
 print()
-if len(results) < 2:
+if len(results) < len(BACKENDS):
     print("INCONCLUSIVE: one backend did not produce a result")
     raise SystemExit(1)
 
-scip, gurobi = results["scip"], results["gurobi"]
+first, second = BACKENDS[0], BACKENDS[1]
+scip, gurobi = results[first], results[second]
 problems = []
 if scip["size"] != gurobi["size"]:
     problems.append(f"model size differs: {scip['size']} vs {gurobi['size']}")
@@ -95,10 +100,48 @@ if relative > tolerance:
     problems.append(
         f"objectives differ by {relative:.4%}, above the {tolerance:.2%} both solvers were allowed"
     )
-if scip["installed"] != gurobi["installed"]:
-    problems.append(f"siting differs: {scip['installed']} vs {gurobi['installed']}")
-
 print(f"objective difference: {relative:.5%} (tolerance {tolerance:.2%})")
+
+if scip["installed"] != gurobi["installed"]:
+    # Different siting is not by itself a defect. Both solves stop at a relative
+    # gap, so when two sites cost almost the same the choice between them is
+    # inside the tolerance and each solver may legitimately land on a different
+    # one. What would be a defect is the two backends disagreeing about the cost
+    # of the SAME design, so that is what gets checked.
+    print(f"\nsiting differs ({scip['installed']} vs {gurobi['installed']}); "
+          "cross-evaluating both designs with both backends")
+    cross = {}
+    for owner, source in ((first, results[first]), (second, results[second])):
+        design = None
+        for backend_name in BACKENDS:
+            planning = replace(
+                config.planning,
+                solver_backend=backend_name,
+                solver_time_limit_seconds=TIME_LIMIT,
+                warm_start_time_limit_seconds=60.0,
+                solver_max_parallel_workers=1,
+                solver_memory_limit_mb=0.0,
+            )
+            oracle = StoragePlanningOracle(
+                feeder, planning, config.costs, config.data, config.data_center
+            )
+            if design is None:
+                design = source["design"]
+            evaluated = oracle.solve(
+                scenarios, weights=weights, fixed_design=design
+            )
+            cross[(backend_name, owner)] = float(evaluated.objective)
+        left = cross[(BACKENDS[0], owner)]
+        right = cross[(BACKENDS[1], owner)]
+        gap = abs(left - right) / max(abs(left), 1.0)
+        print(f"  {owner}'s design: {BACKENDS[0]} {left:,.2f} vs "
+              f"{BACKENDS[1]} {right:,.2f} -> {gap:.5%}")
+        if gap > 1e-6:
+            problems.append(
+                f"the backends value {owner}'s own design differently ({gap:.5%}); "
+                "that is a translation defect, not degeneracy"
+            )
+    print("  (identical costs mean the models agree and the siting is degenerate)")
 if problems:
     print("\nFAILED:")
     for problem in problems:
@@ -106,4 +149,7 @@ if problems:
     raise SystemExit(1)
 print("PASSED: the two backends agree")
 speedup = scip["seconds"] / max(gurobi["seconds"], 1e-9)
-print(f"speed: SCIP {scip['seconds']:.1f}s -> Gurobi {gurobi['seconds']:.1f}s = {speedup:.1f}x")
+print(
+    f"speed: {first} {scip['seconds']:.1f}s -> {second} {gurobi['seconds']:.1f}s "
+    f"= {speedup:.2f}x"
+)
