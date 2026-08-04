@@ -282,7 +282,9 @@ def train_dfl_stage(
             f"Generator {cvae.kind!r} exposes a {cvae.latent_dim}-dimensional latent, "
             "which is too large for the DFL policy. Use a projected latent."
         )
-    oracle = StoragePlanningOracle(feeder, config.planning, config.costs, config.data)
+    oracle = StoragePlanningOracle(
+        feeder, config.planning, config.costs, config.data, config.data_center
+    )
     writer = _summary_writer(paths.tensorboard / f"dfl_{tag}", tensorboard, config)
     policy: DirectSupportPolicy | None = None
     support_source_names: list[str] = []
@@ -504,7 +506,9 @@ def evaluate_stage(
         name_prefix="dfl_evaluation",
     )
 
-    oracle = StoragePlanningOracle(feeder, config.planning, config.costs, config.data)
+    oracle = StoragePlanningOracle(
+        feeder, config.planning, config.costs, config.data, config.data_center
+    )
     planning = oracle.solve(generated, weights=weights)
     if not planning.feasible:
         raise RuntimeError(

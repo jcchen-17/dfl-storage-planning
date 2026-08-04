@@ -129,8 +129,12 @@ def ieee13_unbalanced_microgrid() -> Feeder:
         Line("671", "684", tuple("AC"), 0.0022, 0.0043, 2.0),
         Line("684", "611", tuple("C"), 0.0018, 0.0035, 1.0),
         Line("684", "652", tuple("A"), 0.0025, 0.0048, 1.0),
-        Line("671", "692", tuple("ABC"), 0.0010, 0.0020, 2.5),
-        Line("692", "675", tuple("ABC"), 0.0022, 0.0042, 2.5),
+        # The 671-692-675 branch feeds the data-center bus.  The original 2.5 MVA
+        # rating is already marginal for the base facility and cannot host a
+        # larger one, so this branch carries the interconnection upgrade a real
+        # study would require.  Ratings elsewhere are unchanged.
+        Line("671", "692", tuple("ABC"), 0.0010, 0.0020, 4.0),
+        Line("692", "675", tuple("ABC"), 0.0022, 0.0042, 4.0),
     )
 
     active = np.zeros((len(buses), 3), dtype=float)

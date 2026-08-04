@@ -142,6 +142,30 @@ class DFLConfig:
 
 
 @dataclass(frozen=True)
+class DataCenterConfig:
+    """Facility power model at the data-center bus, in MW.
+
+        power(t) = non_it_mw + PUE(t) * (it_base_mw + it_workload_mw * processed(t))
+
+    ``workload_arrival`` and ``pue`` are dimensionless series in the dataset, so
+    these three coefficients alone set the facility's scale.  Changing them
+    rescales the data center without touching the dataset or any trained
+    generator; only the planning results depend on them.
+
+    The defaults give a 0.24-0.48 MW facility -- an edge data center.  Raising
+    them past roughly 0.96 MW peak requires uprating the 671-692-675 branch,
+    which is what an interconnection study for a larger facility would conclude.
+    """
+
+    non_it_mw: float = 0.03
+    it_base_mw: float = 0.12
+    it_workload_mw: float = 0.30
+
+    def power_mw(self, pue: float, processed: float) -> float:
+        return self.non_it_mw + pue * (self.it_base_mw + self.it_workload_mw * processed)
+
+
+@dataclass(frozen=True)
 class PlanningConfig:
     max_storage_sites: int
     initial_soc: float
@@ -171,6 +195,10 @@ class PlanningConfig:
     # max(60 s, 30% of solver_time_limit_seconds). The bootstrap is cached per
     # scenario set, so this is paid once per distinct scenario set, not per solve.
     warm_start_time_limit_seconds: float = 0.0
+    # Backup generator rating at the generator bus. It scales with the facility
+    # it backs up, so it belongs in configuration rather than in the model body.
+    backup_generator_mw: float = 1.0
+    backup_generator_mvar: float = 0.8
 
 
 @dataclass(frozen=True)
@@ -200,6 +228,9 @@ class ExperimentConfig:
     # Optional so configurations written before generators became pluggable keep
     # loading and keep selecting the CVAE.
     generator: GeneratorConfig = field(default_factory=GeneratorConfig)
+    # Optional so configurations written before the data-center scale became
+    # tunable keep loading and keep the original edge-scale facility.
+    data_center: DataCenterConfig = field(default_factory=DataCenterConfig)
 
 
 def _construct(section_type: type, raw: dict[str, Any]) -> Any:
@@ -232,4 +263,5 @@ def load_config(path: str | Path) -> ExperimentConfig:
         costs=_construct(CostConfig, raw["costs"]),
         output_dir=(config_path.parent.parent / raw["output_dir"]).resolve(),
         generator=_generator_config(raw.get("generator")),
+        data_center=_construct(DataCenterConfig, dict(raw.get("data_center", {}))),
     )

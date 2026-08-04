@@ -20,6 +20,7 @@ def main() -> None:
         payload["planning"],
         payload["costs"],
         payload["data"],
+        payload.get("data_center"),
     )
     warm_start_cached = bool(payload.get("warm_start_cached", False))
     # A fresh worker starts with an empty warm-start cache. Adopt whatever the

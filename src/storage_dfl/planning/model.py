@@ -12,7 +12,7 @@ from typing import Iterable
 
 from pyscipopt import Model, quicksum
 
-from storage_dfl.config import CostConfig, DataConfig, PlanningConfig
+from storage_dfl.config import CostConfig, DataCenterConfig, DataConfig, PlanningConfig
 from storage_dfl.data import Scenario
 from storage_dfl.network import Feeder
 from storage_dfl.planning.results import (
@@ -70,11 +70,15 @@ class StoragePlanningOracle:
         planning: PlanningConfig,
         costs: CostConfig,
         data: DataConfig,
+        data_center: DataCenterConfig | None = None,
     ) -> None:
         self.feeder = feeder
         self.planning = planning
         self.costs = costs
         self.data = data
+        # Optional so callers written before the facility scale became tunable
+        # keep the original edge-scale coefficients.
+        self.data_center = data_center or DataCenterConfig()
         if planning.carbon_formulation not in {
             "exact",
             "mccormick",
@@ -335,6 +339,7 @@ class StoragePlanningOracle:
             bootstrap_planning,
             self.costs,
             self.data,
+            self.data_center,
         )
         bootstrap = bootstrap_oracle._build_model(
             scenarios,
@@ -458,6 +463,9 @@ class StoragePlanningOracle:
             "planning": self.planning,
             "costs": self.costs,
             "data": self.data,
+            # Without this the worker would silently rebuild the facility at the
+            # default edge scale while the parent believes it was rescaled.
+            "data_center": self.data_center,
             "scenarios": scenarios,
             "weights": weights,
             "fixed_design": fixed_design,
@@ -539,6 +547,7 @@ class StoragePlanningOracle:
         feeder = self.feeder
         pcfg = self.planning
         ccfg = self.costs
+        dccfg = self.data_center
         horizon = scenarios[0].horizon
         dt = self.data.delta_t_hours
         buses = feeder.buses
@@ -669,8 +678,20 @@ class StoragePlanningOracle:
                 t: quicksum(grid_phase[phase, t] for phase in bus_phases[root])
                 for t in times
             }
-            generator = {t: model.addVar(lb=0.0, ub=1.0, name=f"gen[{sid},{t}]") for t in times}
-            q_generator = {t: model.addVar(lb=-0.8, ub=0.8, name=f"qgen[{sid},{t}]") for t in times}
+            generator = {
+                t: model.addVar(
+                    lb=0.0, ub=pcfg.backup_generator_mw, name=f"gen[{sid},{t}]"
+                )
+                for t in times
+            }
+            q_generator = {
+                t: model.addVar(
+                    lb=-pcfg.backup_generator_mvar,
+                    ub=pcfg.backup_generator_mvar,
+                    name=f"qgen[{sid},{t}]",
+                )
+                for t in times
+            }
             pv = {
                 (bus, phase, t): model.addVar(
                     lb=0.0, name=f"pv[{sid},{bus},{phase},{t}]"
@@ -781,8 +802,9 @@ class StoragePlanningOracle:
                     >= backlog[t + 1],
                     name=f"work_deadline[{sid},{t}]",
                 )
-                dc_power = 0.03 + float(scenario.pue[t]) * (0.12 + 0.30 * processed[t])
-                model.addCons(shed[t] <= dc_power - 0.12)
+                dc_power = dccfg.power_mw(float(scenario.pue[t]), processed[t])
+                # Shedding can never take the facility below its IT base draw.
+                model.addCons(shed[t] <= dc_power - dccfg.it_base_mw)
                 model.addCons(
                     grid[t]
                     <= float(scenario.grid_available[t]) * pcfg.grid_limit_mw,
@@ -1149,7 +1171,7 @@ class StoragePlanningOracle:
                 for phase in bus_phases[root]:
                     model.addCons(voltage[root, phase, t] == 1.0)
 
-                dc_power = 0.03 + float(scenario.pue[t]) * (0.12 + 0.30 * processed[t])
+                dc_power = dccfg.power_mw(float(scenario.pue[t]), processed[t])
                 for bus, phase in node_phases:
                     bi = bus_index[bus]
                     pi = phase_index[phase]

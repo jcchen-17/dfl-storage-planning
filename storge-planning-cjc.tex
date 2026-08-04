@@ -1,0 +1,1343 @@
+\documentclass[journal]{IEEEtran}
+
+\usepackage[noadjust]{cite}
+
+
+
+
+% *** GRAPHICS RELATED PACKAGES ***
+%
+\ifCLASSINFOpdf
+   \usepackage[pdftex]{graphicx}
+\usepackage{mathrsfs}
+  % declare the path(s) where your graphic files are
+   \graphicspath{{img/}}
+  % and their extensions so you won't have to specify these with
+  % every instance of \includegraphics
+   \DeclareGraphicsExtensions{.pdf,.jpeg,.png}
+\else
+  % or other class option (dvipsone, dvipdf, if not using dvips). graphicx
+  % will default to the driver specified in the system graphics.cfg if no
+  % driver is specified.
+  % \usepackage[dvips]{graphicx}
+  % declare the path(s) where your graphic files are
+  % \graphicspath{{../eps/}}
+  % and their extensions so you won't have to specify these with
+  % every instance of \includegraphics
+  % \DeclareGraphicsExtensions{.eps}
+\fi
+% graphicx was written by David Carlisle and Sebastian Rahtz. It is
+% required if you want graphics, photos, etc. graphicx.sty is already
+% installed on most LaTeX systems. The latest version and documentation
+% can be obtained at: 
+% http://www.ctan.org/pkg/graphicx
+% Another good source of documentation is "Using Imported Graphics in
+% LaTeX2e" by Keith Reckdahl which can be found at:
+% http://www.ctan.org/pkg/epslatex
+%
+% latex, and pdflatex in dvi mode, support graphics in encapsulated
+% postscript (.eps) format. pdflatex in pdf mode supports graphics
+% in .pdf, .jpeg, .png and .mps (metapost) formats. Users should ensure
+% that all non-photo figures use a vector format (.eps, .pdf, .mps) and
+% not a bitmapped formats (.jpeg, .png). The IEEE frowns on bitmapped formats
+% which can result in "jaggedy"/blurry rendering of lines and letters as
+% well as large increases in file sizes.
+%
+% You can find documentation about the pdfTeX application at:
+% http://www.tug.org/applications/pdftex
+
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs} 
+\makeatletter
+\renewcommand\fs@ruled{%
+  \def\@fs@cfont{\bfseries\color{blue}}%
+  \let\@fs@capt\floatc@ruled
+  \def\@fs@pre{{\color{blue}\hrule height.8pt depth0pt}\kern2pt}%
+  \def\@fs@post{\kern2pt{\color{blue}\hrule}\relax}%
+  \def\@fs@mid{\kern2pt{\color{blue}\hrule}\kern2pt}%
+  \let\@fs@iftopcapt\iftrue
+}
+\makeatother
+
+% *** Edit Packages ***
+\usepackage{soul, color}
+\usepackage{colortbl}
+\usepackage{multirow}
+
+\usepackage{enumitem}
+
+
+% *** Placeholder ***
+\usepackage{lipsum}
+
+
+% *** MATH PACKAGES ***
+%
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts, bm}
+\usepackage{steinmetz}
+\usepackage{dsfont}
+\usepackage[colorlinks=true]{hyperref} 
+\hypersetup{
+    colorlinks,
+    citecolor=blue,
+    linkcolor=blue,
+    urlcolor=blue
+}
+\usepackage{xurl}      
+\usepackage[caption=false, font=footnotesize]{subfig}
+\usepackage{nomencl}
+\makenomenclature
+
+\usepackage{etoolbox}
+
+\renewcommand\nomgroup[1]{%
+  \item[\bfseries
+  \ifstrequal{#1}{A}{General Math and Indices}{%
+  \ifstrequal{#1}{B}{Grid Control Related}{%
+  \ifstrequal{#1}{C}{RL Related}{}}}%
+]}
+
+
+% correct bad hyphenation here
+\hyphenation{op-tical net-works semi-conduc-tor}
+
+
+\makeatletter
+\def\ps@IEEEtitlepagestyle{
+  \def\@oddfoot{\mycopyrightnotice}
+  \def\@evenfoot{}
+}
+\def\mycopyrightnotice{
+  {\scriptsize
+  \begin{minipage}{\textwidth}
+  \end{minipage}
+  }
+}
+\usepackage{booktabs,tabularx,makecell,array}
+
+
+\usepackage{titlesec}
+
+\titlespacing\section{0pt}{6pt plus 4pt minus 2pt}{0pt plus 2pt minus 2pt}
+\titlespacing\subsection{0pt}{3pt plus 2pt minus 2pt}{0pt plus 2pt minus 2pt}
+\titlespacing\subsubsection{0pt}{2pt plus 2pt minus 2pt}{0pt plus 2pt minus 2pt}
+
+\usepackage{titlesec}
+\usepackage{amsmath,amssymb,amsthm,epsfig,color,empheq,graphicx}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+\newtheorem{example}{Example}
+
+\DeclareMathOperator*{\argmax}{\arg\!\max}
+
+\newcounter{assump}
+\renewcommand{\theassump}{A.\arabic{assump}}
+
+\newenvironment{assumption}{%
+  \refstepcounter{assump}%
+  \noindent\textbf{\textit{[\theassump]}}\;
+}{\par}
+
+\begin{document}
+ 
+\title{Carbon-Cap-Constrained Planning of Shared Energy Storage\\ in a Microgrid With Batch-Resolved Carbon Accounting}
+ 
+\author{Author~Name%
+\thanks{Manuscript submitted \today. (\textit{Corresponding author: X. Y.})}%
+\thanks{The authors are with the School of Electrical Engineering,
+Southeast University, Nanjing, China (e-mail: author@seu.edu.cn).}}
+ 
+\markboth{IEEE Transactions on Smart Grid,~Vol.~XX, No.~X, Month~2026}%
+{Author \MakeLowercase{\textit{et al.}}: Planning of Shared Energy Storage in a Microgrid}
+ 
+\maketitle
+ 
+% =====================================================================
+\section*{Nomenclature}
+ 
+\subsubsection*{Sets and Indices}
+\begin{IEEEdescription}[\IEEEsetlabelwidth{$\mathcal{N}^{\mathrm{es}}$}]
+\item[$\mathcal{N}$] Set of buses, indexed by $i,j$; bus $0$ is the substation.
+\item[$\mathcal{L}$] Set of distribution lines, indexed by $(i,j)$.
+\item[$\mathcal{N}^{\mathrm{es}}$] Set of candidate shared-ESS buses.
+\item[$\mathcal{G}_i$] Set of dispatchable generators at bus $i$.
+\item[$\mathcal{S}$] Set of representative and extreme scenarios, indexed by $s$.
+\item[$\mathcal{D},\mathcal{T}$] Sets of days and hourly intervals, indexed by $d,t$.
+\item[$\mathcal{K}$] Set of charging vintages (virtual batches), indexed by $k$.
+\end{IEEEdescription}
+ 
+\subsubsection*{Parameters}
+\begin{IEEEdescription}[\IEEEsetlabelwidth{$\overline{\mathscr{w}}_i$}]
+\item[$\rho_s$] Annual occurrence factor of scenario $s$.
+\item[$\Delta t$] Duration of one operating interval.
+\item[$r_{ij},x_{ij}$] Resistance and reactance of branch $(i,j)$.
+\item[$\eta_i^{\mathrm{ch}},\eta_i^{\mathrm{dc}}$] ESS charging/discharging efficiencies.
+\item[$\underline{\mathrm{SOC}}_i,\overline{\mathrm{SOC}}_i$] ESS state-of-charge limits.
+\item[$\overline{S}_{ij}$] Apparent-power limit of branch $(i,j)$.
+\item[$\overline{\mathscr{w}}_i$] Carbon-intensity cap at bus $i$.
+\item[$\mathrm{CRF}$] Capital recovery factor.
+\end{IEEEdescription}
+ 
+\subsubsection*{Planning Variables}
+\begin{IEEEdescription}[\IEEEsetlabelwidth{$E_i^{\mathrm{es,cap}}$}]
+\item[$u_i^{\mathrm{es}}$] Binary shared-ESS siting variable.
+\item[$P_i^{\mathrm{es,cap}}$] Installed shared-ESS power capacity.
+\item[$E_i^{\mathrm{es,cap}}$] Installed shared-ESS energy capacity.
+\end{IEEEdescription}
+ 
+\subsubsection*{Operating Variables}
+\begin{IEEEdescription}[\IEEEsetlabelwidth{$P_{i,s,d,t}^{\mathrm{es,ch}}$}]
+\item[$P_{i,s,d,t}^{\mathrm{es,ch}}$] Aggregate ESS charging power.
+\item[$P_{i,s,d,t}^{\mathrm{es,dc}}$] Aggregate ESS discharging power.
+\item[$e_{i,s,d,t}^{\mathrm{es}}$] Aggregate stored energy.
+\item[$P_{ij,s,d,t},Q_{ij,s,d,t}$] Active/reactive branch power flow.
+\item[$v_{i,s,d,t}$] Squared bus-voltage magnitude.
+\item[$P_{ij,s,d,t}^{+},P_{ij,s,d,t}^{-}$] Forward/reverse active line flow.
+\item[$\mathscr{w}_{i,s,d,t}$] Nodal carbon intensity.
+\end{IEEEdescription}
+ 
+% =====================================================================
+% Model section only.
+% Required packages in the main IEEE manuscript:
+% \usepackage{amsmath,amssymb,bm,mathrsfs}
+
+\raggedbottom
+
+\section{Introduction}
+
+\section{Shared Storage Planning With Batch-Resolved Carbon Accounting}
+\label{sec:model}
+Consider a grid-connected microgrid represented by a fixed radial graph
+$\mathscr{G}=(\mathcal{N},\mathcal{L})$, where bus $0$ is the point of
+common coupling with the upstream grid. The microgrid contains
+dispatchable generators, photovoltaic (PV) units, conventional loads, and
+a data center at bus $i^{\mathrm{DC}}$. Shared energy storage can be
+installed at candidate buses
+$\mathcal{N}^{\mathrm{es}}\subseteq\mathcal{N}$ and is centrally
+dispatched to support the entire microgrid.
+
+The microgrid operator determines the siting and rated power/energy
+capacities of the shared storage facilities and jointly schedules them
+with the other resources. The planning decisions are common to
+all scenarios, whereas dispatch and workload schedules are scenario
+dependent. The objective is to minimize annualized cost subject to the
+operating constraints and nodal carbon-intensity limits. To retain the
+carbon attributes of stored electricity, we develop a
+\emph{charging-time-resolved virtual carbon inventory} model. Each charging
+interval creates a virtual energy batch, termed a \emph{carbon vintage},
+whose charging-time carbon intensity is preserved until discharge. This
+retains the temporal heterogeneity of stored energy and makes its
+carbon-compliance value depend on the vintages available for discharge.
+
+\subsection{Objective}
+\emph{1) Primary Economic Objective:}
+Define the shared-storage planning variables as
+\begin{equation}
+\boldsymbol{x}^{\mathrm{pl}}
+=
+\{u_i^{\mathrm{es}},P_i^{\mathrm{es,cap}},E_i^{\mathrm{es,cap}}\}_{i\in\mathcal{N}^{\mathrm{es}}},
+\label{eq:planning_variables}
+\end{equation}
+and let $\boldsymbol{y}^{\mathrm{op}}$ collect all scenario-dependent
+variables introduced below. The primary problem is
+\begin{equation}
+\min_{\boldsymbol{x}^{\mathrm{pl}},\,\boldsymbol{y}^{\mathrm{op}}}
+\quad
+C^{\mathrm{ann}},
+\label{eq:stage1_objective}
+\end{equation}
+where
+\begin{equation}
+C^{\mathrm{ann}}
+=
+C^{\mathrm{inv}}+C^{\mathrm{op}}.
+\label{eq:annual_cost}
+\end{equation}
+
+The operating scenarios are
+\begin{equation}
+\mathcal{S}=\mathcal{S}^{\mathrm{yr}}\cup\{\mathrm{ex}\},\qquad
+\mathcal{S}^{\mathrm{yr}}=\{\mathrm{sp},\mathrm{su},\mathrm{au},\mathrm{wi}\},
+\label{eq:scenario_set}
+\end{equation}
+where $\mathrm{ex}$ is an extreme operating block. Each scenario contains
+$D^{\mathrm{blk}}=5$ days with $T=24$ hourly intervals. Here,
+$d\in\mathcal{D}=\{1,\ldots,D^{\mathrm{blk}}\}$,
+$t\in\mathcal{T}=\{1,\ldots,T\}$, and $q(d,t)=(d-1)T+t$ maps the block
+into a 120-hour sequence. If $N_s$ is the number of calendar days
+represented by scenario $s$, then
+\begin{align}
+\sum_{s\in\mathcal{S}} N_s
+&=365,
+\label{eq:annual_days}\\
+\rho_s
+&=\frac{N_s}{D^{\mathrm{blk}}}.
+\label{eq:scenario_factor}
+\end{align}
+Thus, each block is counted $\rho_s$ times; a synthetic extreme scenario
+uses $N_{\mathrm{ex}}=0$ and affects feasibility only.
+
+The annualized shared-storage investment cost is
+\begin{equation}
+C^{\mathrm{inv}}
+=
+\mathrm{CRF}
+\sum_{i\in\mathcal{N}^{\mathrm{es}}}
+\left(
+c_i^{\mathrm{site}}u_i^{\mathrm{es}}
++
+c_i^P P_i^{\mathrm{es,cap}}
++
+c_i^E E_i^{\mathrm{es,cap}}
+\right).
+\label{eq:investment_cost}
+\end{equation}
+The annual operating cost is
+\begin{equation}
+C^{\mathrm{op}}
+=c^{\mathrm{dem}}P^{\mathrm{peak}}
++\sum_{s\in\mathcal{S}}\rho_s
+\sum_{d\in\mathcal{D}}\sum_{t\in\mathcal{T}}
+\Gamma_{s,d,t}\Delta t,
+\label{eq:operating_cost}
+\end{equation}
+where
+\begin{align}
+\Gamma_{s,d,t}
+=\;&c_{s,d,t}^{\mathrm{grid}}P_{s,d,t}^{\mathrm{grid}}
++\sum_{i\in\mathcal{N}}\sum_{g\in\mathcal{G}_i}
+c_g^{\mathrm{gen}}P_{g,s,d,t}
+\nonumber\\
+&+\sum_{i\in\mathcal{N}^{\mathrm{es}}}c_i^{\mathrm{deg}}
+\left(P_{i,s,d,t}^{\mathrm{es,ch}}+P_{i,s,d,t}^{\mathrm{es,dc}}\right)
++c^{\mathrm{delay}}B_{s,d,t}
+\nonumber\\
+&+\sum_{i\in\mathcal{N}}c^{\mathrm{curt}}P_{i,s,d,t}^{\mathrm{curt}}
++c^{\mathrm{VOLL}}P_{s,d,t}^{\mathrm{shed,DC}}.
+\label{eq:interval_cost}
+\end{align}
+Equations \eqref{eq:annual_cost}--\eqref{eq:interval_cost} account for
+shared-storage investment, grid purchases, local generation, demand charges,
+degradation, workload delay, PV curtailment, and data-center load shedding.
+
+\emph{2) Carbon-Vintage Preservation Objective:}
+
+Let $C^{\mathrm{op},*}$,
+$u_i^{\mathrm{es},*}$, $P_i^{\mathrm{es,cap},*}$, and
+$E_i^{\mathrm{es,cap},*}$ denote the optimal first-stage values. The
+second stage fixes the storage planning decisions and optimizes only the
+scenario-dependent operating variables:
+\begin{equation}
+\min_{\boldsymbol{y}^{\mathrm{op}}}
+\quad
+J^{\mathrm{res}},
+\label{eq:stage2_objective}
+\end{equation}
+where
+\begin{align}
+J^{\mathrm{res}}
+=
+&
+\sum_{s\in\mathcal{S}}
+\rho_s
+\sum_{d\in\mathcal{D}}
+\sum_{t\in\mathcal{T}}
+\sum_{i\in\mathcal{N}^{\mathrm{es}}}
+\sum_{k\in\mathcal{K}}
+\nonumber\\
+&
+\left(
+\mathscr{w}^{\max}
+-
+\mathscr{w}_{i,k,s}^{\mathrm{es}}
+\right)
+P_{i,k,s,d,t}^{\mathrm{es,dc}}
+\Delta t.
+\label{eq:reserve_objective}
+\end{align}
+The corresponding restrictions are
+\begin{align}
+u_i^{\mathrm{es}}
+&=
+u_i^{\mathrm{es},*},
+\label{eq:fix_siting}\\
+P_i^{\mathrm{es,cap}}
+&=
+P_i^{\mathrm{es,cap},*},
+\label{eq:fix_power_capacity}\\
+E_i^{\mathrm{es,cap}}
+&=
+E_i^{\mathrm{es,cap},*},
+\label{eq:fix_energy_capacity}\\
+C^{\mathrm{op}}
+&\leq
+C^{\mathrm{op},*}
++
+\varepsilon_C^{\mathrm{num}}.
+\label{eq:economic_equivalence}
+\end{align}
+
+Because lower-carbon vintages receive larger coefficients in
+\eqref{eq:reserve_objective}, minimizing $J^{\mathrm{res}}$ avoids their
+unnecessary discharge. The tolerance $\varepsilon_C^{\mathrm{num}}$ only
+absorbs solver precision and cannot alter the planning decisions. The
+vintage-specific discharge variables define a virtual carbon-allocation
+policy; they do not imply physical separation of energy inside the ESS.
+
+\subsection{Constraints}
+Unless otherwise stated, the following constraints apply to all
+$s\in\mathcal{S}$, $d\in\mathcal{D}$, $t\in\mathcal{T}$, and all
+applicable buses, lines, generators, and storage layers.
+
+\emph{1) Data-Center Flexibility:}
+The workload of the data center at bus $i^{\mathrm{DC}}$ is scheduled
+over the full five-day chronology.
+
+The backlog dynamics and inter-day transition are
+\begin{align}
+B_{s,d,t+1}
+&=
+B_{s,d,t}
++
+A_{s,d,t}
+-
+x_{s,d,t},
+\qquad
+t\in\mathcal{T},
+\label{eq:backlog_dynamic}\\
+B_{s,d+1,1}
+&=
+B_{s,d,T+1},
+\qquad
+d=1,\ldots,D^{\mathrm{blk}}-1.
+\label{eq:backlog_interday}
+\end{align}
+The boundary and capacity constraints are
+\begin{equation}
+B_{s,1,1}
+=
+0,
+\qquad
+B_{s,D^{\mathrm{blk}},T+1}
+=
+0,
+\label{eq:backlog_boundary}
+\end{equation}
+\begin{equation}
+0
+\leq
+x_{s,d,t}
+\leq
+\overline{x},
+\qquad
+0
+\leq
+B_{s,d,t}
+\leq
+\overline{B}.
+\label{eq:workload_limits}
+\end{equation}
+
+Define the set of intervals no later than $(d,t)$ as
+\begin{equation}
+\mathcal{P}_{d,t}
+=
+\{
+(d',t'):
+q(d',t')
+\leq
+q(d,t)
+\}.
+\label{eq:past_intervals}
+\end{equation}
+The cumulative processed workload cannot exceed the cumulative arrivals:
+\begin{equation}
+\sum_{(d',t')\in\mathcal{P}_{d,t}}
+x_{s,d',t'}
+\leq
+\sum_{(d',t')\in\mathcal{P}_{d,t}}
+A_{s,d',t'}.
+\label{eq:no_early_processing}
+\end{equation}
+
+For a maximum allowable delay of $L^{\max}$ intervals, define
+\begin{equation}
+\mathcal{H}_{d,t}
+=
+\{
+(d',t'):
+q(d',t')
+\leq
+\min[
+q(d,t)+L^{\max},
+D^{\mathrm{blk}}T
+]
+\}.
+\label{eq:deadline_intervals}
+\end{equation}
+The deadline requirement is
+\begin{equation}
+\sum_{(d',t')\in\mathcal{H}_{d,t}}
+x_{s,d',t'}
+\geq
+\sum_{(d',t')\in\mathcal{P}_{d,t}}
+A_{s,d',t'}.
+\label{eq:deadline_constraint}
+\end{equation}
+
+The IT power and total data-center power are
+\begin{align}
+P_{s,d,t}^{\mathrm{IT}}
+&=
+P^{\mathrm{idle}}
++
+\kappa^{\mathrm{task}}
+x_{s,d,t},
+\label{eq:IT_power}\\
+P_{s,d,t}^{\mathrm{DC}}
+&=
+P_{s,d,t}^{\mathrm{aux}}
++
+\mathrm{PUE}_{s,d,t}
+P_{s,d,t}^{\mathrm{IT}}.
+\label{eq:DC_power}
+\end{align}
+Define the fixed-location indicator
+\begin{equation}
+\delta_i^{\mathrm{DC}}
+=
+\begin{cases}
+1, & i=i^{\mathrm{DC}},\\
+0, & i\neq i^{\mathrm{DC}}.
+\end{cases}
+\label{eq:DC_location_indicator}
+\end{equation}
+The active load at bus $i$ is then
+\begin{equation}
+P_{i,s,d,t}^{L}
+=
+P_{i,s,d,t}^{\mathrm{base}}
++
+\delta_i^{\mathrm{DC}}
+\left(
+P_{s,d,t}^{\mathrm{DC}}
+-
+P_{s,d,t}^{\mathrm{shed,DC}}
+\right).
+\label{eq:nodal_load}
+\end{equation}
+The data-center load-shedding limit is
+\begin{equation}
+0
+\leq
+P_{s,d,t}^{\mathrm{shed,DC}}
+\leq
+P_{s,d,t}^{\mathrm{DC}}
+-
+P_{s,d,t}^{\mathrm{DC,crit}}.
+\label{eq:DC_shedding_limit}
+\end{equation}
+
+Here, $A_{s,d,t}$, $x_{s,d,t}$, and $B_{s,d,t}$ denote arrived,
+processed, and backlogged workload, respectively. Parameters
+$\overline{x}$, $\overline{B}$, and $L^{\max}$ impose processing,
+backlog, and delay limits.
+
+\emph{2) Shared-Storage Planning and Aggregate Operation:}
+
+The storage planning constraints are
+\begin{align}
+\underline{P}_i^{\mathrm{es,cap}}
+u_i^{\mathrm{es}}
+&\leq
+P_i^{\mathrm{es,cap}}
+\leq
+\overline{P}_i^{\mathrm{es,cap}}
+u_i^{\mathrm{es}},
+\label{eq:storage_power_capacity}\\
+\underline{E}_i^{\mathrm{es,cap}}
+u_i^{\mathrm{es}}
+&\leq
+E_i^{\mathrm{es,cap}}
+\leq
+\overline{E}_i^{\mathrm{es,cap}}
+u_i^{\mathrm{es}},
+\label{eq:storage_energy_capacity}\\
+\sum_{i\in\mathcal{N}^{\mathrm{es}}}
+u_i^{\mathrm{es}}
+&\leq
+\overline{N}^{\mathrm{es}},
+\label{eq:storage_site_limit}\\
+h_i^{\min}P_i^{\mathrm{es,cap}}
+&\leq
+E_i^{\mathrm{es,cap}}
+\leq
+h_i^{\max}P_i^{\mathrm{es,cap}}.
+\label{eq:storage_duration}
+\end{align}
+
+The aggregate charging power, discharging power, and stored energy are
+obtained by summing all layers:
+\begin{align}
+P_{i,s,d,t}^{\mathrm{es,ch}}
+&=
+\sum_{k\in\mathcal{K}}
+P_{i,k,s,d,t}^{\mathrm{es,ch}},
+\label{eq:aggregate_charge}\\
+P_{i,s,d,t}^{\mathrm{es,dc}}
+&=
+\sum_{k\in\mathcal{K}}
+P_{i,k,s,d,t}^{\mathrm{es,dc}},
+\label{eq:aggregate_discharge}\\
+e_{i,s,d,t}^{\mathrm{es}}
+&=
+\sum_{k\in\mathcal{K}}
+e_{i,k,s,d,t}^{\mathrm{es}}.
+\label{eq:aggregate_energy}
+\end{align}
+The aggregate operating limits are
+\begin{align}
+0
+\leq
+P_{i,s,d,t}^{\mathrm{es,ch}}
+&\leq
+P_i^{\mathrm{es,cap}},
+\label{eq:aggregate_charge_limit}\\
+0
+\leq
+P_{i,s,d,t}^{\mathrm{es,dc}}
+&\leq
+P_i^{\mathrm{es,cap}},
+\label{eq:aggregate_discharge_limit}\\
+u_{i,s,d,t}^{\mathrm{es,ch}}
++
+u_{i,s,d,t}^{\mathrm{es,dc}}
+&\leq
+1,
+\label{eq:charge_discharge_exclusion}\\
+P_{i,s,d,t}^{\mathrm{es,ch}}
+&\leq
+\overline{P}_i^{\mathrm{es,cap}}
+u_{i,s,d,t}^{\mathrm{es,ch}},
+\label{eq:charge_status}\\
+P_{i,s,d,t}^{\mathrm{es,dc}}
+&\leq
+\overline{P}_i^{\mathrm{es,cap}}
+u_{i,s,d,t}^{\mathrm{es,dc}},
+\label{eq:discharge_status}\\
+\underline{\mathrm{SOC}}_i
+E_i^{\mathrm{es,cap}}
+&\leq
+e_{i,s,d,t}^{\mathrm{es}}
+\leq
+\overline{\mathrm{SOC}}_i
+E_i^{\mathrm{es,cap}}.
+\label{eq:SOC_limit}
+\end{align}
+
+The variables $u_i^{\mathrm{es}}$, $P_i^{\mathrm{es,cap}}$, and
+$E_i^{\mathrm{es,cap}}$ are common to all scenarios. Consequently, the
+seasonal and extreme scenarios jointly determine the final storage
+location and capacity. The layer representation changes only the carbon
+accounting resolution and does not alter the aggregate physical storage
+constraints.
+
+\emph{3) Charging-Time-Resolved Virtual Carbon Inventory:}
+The water-tank carbon-footprint model represents stored energy and virtual
+carbon emissions as a single well-mixed inventory \cite{chen2025copf}.
+In contrast, the proposed model retains a separate virtual inventory for
+each charging vintage. The associated energy and carbon remain
+identifiable until discharge, allowing the planner to distinguish
+low- and high-carbon stored energy and to optimize their discharge
+allocation under nodal carbon-intensity limits.
+
+\textit{a) Carbon-vintage creation:}
+
+Within each representative five-day scenario, every hourly interval is
+associated with one candidate charging-batch layer. Let $k$ denote the
+layer index and define
+\begin{equation}
+\mathcal{K}
+=
+\{0,1,\ldots,K^{\max}\},
+\qquad
+K^{\max}
+=
+D^{\mathrm{blk}}T
+=
+120.
+\label{eq:K_set}
+\end{equation}
+Layer $k=0$ represents the inventory that exists before the scenario
+begins, whereas each layer $k\geq1$ corresponds to one candidate charging
+interval. The formation day and hourly interval associated with layer
+$k\geq1$ are
+\begin{equation}
+d_k
+=
+\left\lceil
+\frac{k}{T}
+\right\rceil,
+\qquad
+t_k
+=
+k-(d_k-1)T.
+\label{eq:layer_mapping}
+\end{equation}
+Thus, $q(d_k,t_k)=k$, and each activated layer is uniquely associated
+with one charging interval.
+
+The initial layer cannot receive new charging energy:
+\begin{equation}
+P_{i,0,s,d,t}^{\mathrm{es,ch}}
+=
+0.
+\label{eq:initial_layer_no_charge}
+\end{equation}
+For each new layer $k\geq1$, charging is permitted only at its associated
+formation interval:
+\begin{equation}
+P_{i,k,s,d,t}^{\mathrm{es,ch}}
+=
+0,
+\qquad
+q(d,t)\neq k.
+\label{eq:layer_charge_time}
+\end{equation}
+The activation constraints are
+\begin{align}
+\varepsilon^{\mathrm{ch}}
+u_{i,k,s}^{\mathrm{es,lay}}
+&\leq
+P_{i,k,s,d_k,t_k}^{\mathrm{es,ch}},
+\label{eq:layer_activation_lower}\\
+P_{i,k,s,d_k,t_k}^{\mathrm{es,ch}}
+&\leq
+\overline{P}_i^{\mathrm{es,cap}}
+u_{i,k,s}^{\mathrm{es,lay}}.
+\label{eq:layer_activation_upper}
+\end{align}
+A layer cannot discharge before its formation, and the layer variables
+are linked to the activation state:
+\begin{align}
+P_{i,k,s,d,t}^{\mathrm{es,dc}}
+&=
+0,
+\qquad
+q(d,t)<k,
+\label{eq:no_discharge_before_formation}\\
+0
+\leq
+P_{i,k,s,d,t}^{\mathrm{es,dc}}
+&\leq
+\overline{P}_i^{\mathrm{es,cap}}
+u_{i,k,s}^{\mathrm{es,lay}},
+\label{eq:layer_discharge_activation}\\
+0
+\leq
+e_{i,k,s,d,t}^{\mathrm{es}}
+&\leq
+\overline{E}_i^{\mathrm{es,cap}}
+u_{i,k,s}^{\mathrm{es,lay}},
+\label{eq:layer_energy_activation}\\
+0
+\leq
+m_{i,k,s,d,t}^{\mathrm{es}}
+&\leq
+\mathscr{w}^{\max}
+\overline{E}_i^{\mathrm{es,cap}}
+u_{i,k,s}^{\mathrm{es,lay}}.
+\label{eq:layer_carbon_activation}
+\end{align}
+
+Variable $u_{i,k,s}^{\mathrm{es,lay}}$ indicates whether the candidate
+charging batch is created, and $\varepsilon^{\mathrm{ch}}$ is the minimum
+effective charging power. Since each layer receives charging energy only
+once, its carbon intensity remains fixed after formation.
+
+\textit{b) Vintage-wise energy and carbon dynamics:}
+
+Define the energy-retention factor as
+\begin{equation}
+\kappa_i^{\mathrm{es}}
+=
+1-\sigma_i,
+\label{eq:energy_retention}
+\end{equation}
+where $\sigma_i$ is the self-discharge rate per interval. The layer-wise
+energy dynamics are
+\begin{align}
+e_{i,k,s,d,t+1}^{\mathrm{es}}
+=
+&
+\kappa_i^{\mathrm{es}}
+e_{i,k,s,d,t}^{\mathrm{es}}
++
+\eta_i^{\mathrm{ch}}
+P_{i,k,s,d,t}^{\mathrm{es,ch}}
+\Delta t
+\nonumber\\
+&
+-
+\frac{
+P_{i,k,s,d,t}^{\mathrm{es,dc}}
+}{
+\eta_i^{\mathrm{dc}}
+}
+\Delta t,
+\qquad
+t\in\mathcal{T},
+\label{eq:layer_energy_dynamic}
+\end{align}
+subject to
+\begin{equation}
+\frac{
+P_{i,k,s,d,t}^{\mathrm{es,dc}}
+}{
+\eta_i^{\mathrm{dc}}
+}
+\Delta t
+\leq
+\kappa_i^{\mathrm{es}}
+e_{i,k,s,d,t}^{\mathrm{es}}.
+\label{eq:available_layer_energy}
+\end{equation}
+The energy remaining at the end of day $d$ is transferred to day $d+1$
+without mixing:
+\begin{equation}
+e_{i,k,s,d+1,1}^{\mathrm{es}}
+=
+e_{i,k,s,d,T+1}^{\mathrm{es}},
+\quad
+d=1,\ldots,D^{\mathrm{blk}}-1.
+\label{eq:energy_interday}
+\end{equation}
+
+An active layer inherits the nodal carbon intensity at its charging
+interval. The conditional equality
+$\mathscr{w}_{i,k,s}^{\mathrm{es}}=
+\mathscr{w}_{i,s,d_k,t_k}$ is imposed through
+\begin{align}
+\mathscr{w}_{i,k,s}^{\mathrm{es}}
+-
+\mathscr{w}_{i,s,d_k,t_k}
+&\leq
+M^{\mathrm{big}}
+\left(
+1-u_{i,k,s}^{\mathrm{es,lay}}
+\right),
+\label{eq:carbon_intensity_bigM_1}\\
+\mathscr{w}_{i,s,d_k,t_k}
+-
+\mathscr{w}_{i,k,s}^{\mathrm{es}}
+&\leq
+M^{\mathrm{big}}
+\left(
+1-u_{i,k,s}^{\mathrm{es,lay}}
+\right),
+\label{eq:carbon_intensity_bigM_2}\\
+0
+\leq
+\mathscr{w}_{i,k,s}^{\mathrm{es}}
+&\leq
+\mathscr{w}^{\max}
+u_{i,k,s}^{\mathrm{es,lay}}.
+\label{eq:carbon_intensity_bound}
+\end{align}
+
+The carbon inventory of each layer satisfies
+\begin{equation}
+m_{i,k,s,d,t}^{\mathrm{es}}
+=
+\mathscr{w}_{i,k,s}^{\mathrm{es}}
+e_{i,k,s,d,t}^{\mathrm{es}},
+\label{eq:carbon_energy_relation}
+\end{equation}
+and evolves according to
+\begin{align}
+m_{i,k,s,d,t+1}^{\mathrm{es}}
+=
+&
+\kappa_i^{\mathrm{es}}
+m_{i,k,s,d,t}^{\mathrm{es}}
++
+\mathscr{w}_{i,s,d,t}
+\eta_i^{\mathrm{ch}}
+P_{i,k,s,d,t}^{\mathrm{es,ch}}
+\Delta t
+\nonumber\\
+&
+-
+\mathscr{w}_{i,k,s}^{\mathrm{es}}
+\frac{
+P_{i,k,s,d,t}^{\mathrm{es,dc}}
+}{
+\eta_i^{\mathrm{dc}}
+}
+\Delta t.
+\label{eq:layer_carbon_dynamic}
+\end{align}
+The layer carbon inventory is transferred between consecutive days as
+\begin{equation}
+m_{i,k,s,d+1,1}^{\mathrm{es}}
+=
+m_{i,k,s,d,T+1}^{\mathrm{es}},
+\quad
+d=1,\ldots,D^{\mathrm{blk}}-1.
+\label{eq:carbon_interday}
+\end{equation}
+
+In \eqref{eq:layer_energy_dynamic}--\eqref{eq:carbon_interday},
+$\eta_i^{\mathrm{ch}}$ and $\eta_i^{\mathrm{dc}}$ are the charging and
+discharging efficiencies. The charging term carries the nodal carbon
+intensity at the charging interval, whereas the discharging term removes
+carbon according to the fixed intensity of the corresponding layer.
+Therefore, both energy and carbon attributes are transferred consistently
+across the five-day horizon.
+
+\textit{c) Boundary conditions:}
+
+Each scenario is initialized independently. The initial storage inventory
+is assigned to layer $k=0$:
+\begin{align}
+e_{i,0,s,1,1}^{\mathrm{es}}
+&=
+\mathrm{SOC}_{i,s}^{\mathrm{ini}}
+E_i^{\mathrm{es,cap}},
+\label{eq:initial_energy}\\
+m_{i,0,s,1,1}^{\mathrm{es}}
+&=
+\mathscr{w}_{i,s}^{\mathrm{es,ini}}
+e_{i,0,s,1,1}^{\mathrm{es}},
+\label{eq:initial_carbon}\\
+\mathscr{w}_{i,0,s}^{\mathrm{es}}
+&=
+\mathscr{w}_{i,s}^{\mathrm{es,ini}}.
+\label{eq:initial_carbon_intensity}
+\end{align}
+All new layers are initially empty:
+\begin{equation}
+e_{i,k,s,1,1}^{\mathrm{es}}
+=
+0,
+\qquad
+m_{i,k,s,1,1}^{\mathrm{es}}
+=
+0,
+\qquad
+k\geq1.
+\label{eq:new_layer_initial_state}
+\end{equation}
+
+To avoid end-of-horizon depletion, aggregate energy and carbon cycles are
+imposed only at the end of the entire five-day block:
+\begin{align}
+\sum_{k\in\mathcal{K}}
+e_{i,k,s,D^{\mathrm{blk}},T+1}^{\mathrm{es}}
+&=
+e_{i,0,s,1,1}^{\mathrm{es}},
+\label{eq:block_energy_cycle}\\
+\sum_{k\in\mathcal{K}}
+m_{i,k,s,D^{\mathrm{blk}},T+1}^{\mathrm{es}}
+&=
+m_{i,0,s,1,1}^{\mathrm{es}}.
+\label{eq:block_carbon_cycle}
+\end{align}
+
+Parameters $\mathrm{SOC}_{i,s}^{\mathrm{ini}}$ and
+$\mathscr{w}_{i,s}^{\mathrm{es,ini}}$ denote the initial state of charge
+and initial inventory carbon intensity. Different seasonal scenarios are
+not linked to each other; hence, the model captures short-term inter-day
+transfer rather than seasonal storage transfer. The terminal constraints
+restore only the aggregate energy and carbon inventories and do not force
+each newly created layer to be emptied.
+
+\emph{4) Dispatchable Generation, PV, and Grid:}
+
+The local-generator output limits are
+\begin{equation}
+\underline{P}_{g,s,d,t}
+\leq
+P_{g,s,d,t}
+\leq
+\overline{P}_{g,s,d,t},
+\label{eq:generator_active_limit}
+\end{equation}
+\begin{equation}
+\underline{Q}_{g,s,d,t}
+\leq
+Q_{g,s,d,t}
+\leq
+\overline{Q}_{g,s,d,t}.
+\label{eq:generator_reactive_limit}
+\end{equation}
+The initial, intra-day, and inter-day ramping constraints are
+\begin{align}
+\underline{\Delta}_g
+&\leq
+P_{g,s,1,1}
+-
+P_{g,s}^{\mathrm{ini}}
+\leq
+\overline{\Delta}_g,
+\label{eq:initial_ramp}\\
+\underline{\Delta}_g
+&\leq
+P_{g,s,d,t}
+-
+P_{g,s,d,t-1}
+\leq
+\overline{\Delta}_g,
+\quad
+t=2,\ldots,T,
+\label{eq:intraday_ramp}\\
+\underline{\Delta}_g
+&\leq
+P_{g,s,d+1,1}
+-
+P_{g,s,d,T}
+\leq
+\overline{\Delta}_g,
+\quad
+d=1,\ldots,D^{\mathrm{blk}}-1.
+\label{eq:interday_ramp}
+\end{align}
+
+Photovoltaic utilization and curtailment satisfy
+\begin{equation}
+P_{i,s,d,t}^{\mathrm{PV}}
++
+P_{i,s,d,t}^{\mathrm{curt}}
+=
+\overline{P}_{i,s,d,t}^{\mathrm{PV}},
+\label{eq:PV_balance}
+\end{equation}
+\begin{equation}
+P_{i,s,d,t}^{\mathrm{PV}}
+\geq
+0,
+\qquad
+P_{i,s,d,t}^{\mathrm{curt}}
+\geq
+0.
+\label{eq:PV_nonnegative}
+\end{equation}
+The grid-purchase power is limited by
+\begin{equation}
+0
+\leq
+P_{s,d,t}^{\mathrm{grid}}
+\leq
+a_{s,d,t}^{\mathrm{grid}}
+\overline{P}^{\mathrm{grid}}.
+\label{eq:grid_purchase_limit}
+\end{equation}
+The annual peak variable satisfies
+\begin{equation}
+P_{s,d,t}^{\mathrm{grid}}\leq P^{\mathrm{peak}},
+\qquad \forall s,d,t.
+\label{eq:peak_constraint}
+\end{equation}
+
+Parameter $a_{s,d,t}^{\mathrm{grid}}$ is the grid-availability indicator.
+Constraint \eqref{eq:interday_ramp} prevents an artificial generator
+output jump at a midnight boundary.
+
+\emph{5) LinDistFlow Network Model:}
+Each line $(i,j)\in\mathcal{L}$ is oriented from the substation toward
+the downstream bus. Let $P_{ij,s,d,t}$ and $Q_{ij,s,d,t}$ denote the
+corresponding active and reactive flows; negative $P_{ij,s,d,t}$ denotes
+reverse active-power flow. With $\delta_{i0}=1$ at the substation and zero
+otherwise, nodal power balance is enforced by
+\begin{align}
+&
+\sum_{g\in\mathcal{G}_i}
+P_{g,s,d,t}
++
+P_{i,s,d,t}^{\mathrm{PV}}
++
+\delta_{i0}
+P_{s,d,t}^{\mathrm{grid}}
++
+P_{i,s,d,t}^{\mathrm{es,dc}}
+\nonumber\\
+&
+-
+P_{i,s,d,t}^{L}
+-
+P_{i,s,d,t}^{\mathrm{es,ch}}
+=
+\sum_{j:(i,j)\in\mathcal{L}}P_{ij,s,d,t}
+-
+\sum_{h:(h,i)\in\mathcal{L}}P_{hi,s,d,t},
+\label{eq:nodal_active_balance}\\
+&
+\sum_{g\in\mathcal{G}_i}
+Q_{g,s,d,t}
+-
+Q_{i,s,d,t}^{L}
+=
+\sum_{j:(i,j)\in\mathcal{L}}Q_{ij,s,d,t}
+-
+\sum_{h:(h,i)\in\mathcal{L}}Q_{hi,s,d,t}.
+\label{eq:nodal_reactive_balance}
+\end{align}
+The LinDistFlow voltage equation \cite{Baran1989DistFlow} and operating
+limits are
+\begin{align}
+v_{j,s,d,t}
+&=
+v_{i,s,d,t}
+-2\left(r_{ij}P_{ij,s,d,t}+x_{ij}Q_{ij,s,d,t}\right),
+\label{eq:lindistflow_voltage}\\
+P_{ij,s,d,t}^{2}+Q_{ij,s,d,t}^{2}
+&\leq
+\overline{S}_{ij}^{2},
+\label{eq:line_limit}\\
+\underline{V}_i^2
+\leq
+v_{i,s,d,t}
+&\leq
+\overline{V}_i^2,
+\label{eq:voltage_limit}\\
+v_{0,s,d,t}
+&=
+V_0^2.
+\label{eq:substation_voltage}
+\end{align}
+
+For carbon tracing under possible reverse flow, decompose each active
+line flow as $P_{ij,s,d,t}=P_{ij,s,d,t}^{+}-P_{ij,s,d,t}^{-}$, where the
+two nonnegative components represent the forward and reverse directions.
+Their mutual exclusivity is imposed by
+\begin{align}
+0\leq P_{ij,s,d,t}^{+}
+&\leq \overline{S}_{ij}z_{ij,s,d,t}^{\mathrm{f}},
+\label{eq:forward_flow}\\
+0\leq P_{ij,s,d,t}^{-}
+&\leq \overline{S}_{ij}(1-z_{ij,s,d,t}^{\mathrm{f}}),
+\label{eq:reverse_flow}\\
+P_{ij,s,d,t}
+&=P_{ij,s,d,t}^{+}-P_{ij,s,d,t}^{-},
+\qquad z_{ij,s,d,t}^{\mathrm{f}}\in\{0,1\}.
+\label{eq:flow_decomposition}
+\end{align}
+
+\emph{6) Nodal Carbon Flow and Carbon-Intensity Limits:}
+The carbon flow injected by storage discharge is
+\begin{equation}
+R_{i,s,d,t}^{\mathrm{es,dc}}
+=
+\sum_{k\in\mathcal{K}}
+\mathscr{w}_{i,k,s}^{\mathrm{es}}
+P_{i,k,s,d,t}^{\mathrm{es,dc}}.
+\label{eq:storage_carbon_flow}
+\end{equation}
+Under the proportional-sharing principle \cite{chen2025copf}, the nodal
+carbon-flow balance is
+\begin{align}
+&
+\mathscr{w}_{i,s,d,t}
+\left(
+\sum_{g\in\mathcal{G}_i}
+P_{g,s,d,t}
++
+P_{i,s,d,t}^{\mathrm{PV}}
++
+\delta_{i0}
+P_{s,d,t}^{\mathrm{grid}}
+\right.
+\nonumber\\
+&
+\left.
++
+P_{i,s,d,t}^{\mathrm{es,dc}}
++
+\sum_{h:(h,i)\in\mathcal{L}}P_{hi,s,d,t}^{+}
++
+\sum_{j:(i,j)\in\mathcal{L}}P_{ij,s,d,t}^{-}
+\right)
+\nonumber\\
+=\;&
+\sum_{g\in\mathcal{G}_i}
+\mathscr{w}_{i,g,s,d,t}^{G}
+P_{g,s,d,t}
++
+\delta_{i0}
+\mathscr{w}_{s,d,t}^{\mathrm{grid}}
+P_{s,d,t}^{\mathrm{grid}}
+\nonumber\\
+&
++
+R_{i,s,d,t}^{\mathrm{es,dc}}
++
+\sum_{h:(h,i)\in\mathcal{L}}
+\mathscr{w}_{h,s,d,t}P_{hi,s,d,t}^{+}
++
+\sum_{j:(i,j)\in\mathcal{L}}
+\mathscr{w}_{j,s,d,t}P_{ij,s,d,t}^{-}.
+\label{eq:nodal_carbon_balance}
+\end{align}
+The nodal carbon-intensity caps are
+\begin{equation}
+\mathscr{w}_{i,s,d,t}
+\leq
+\overline{\mathscr{w}}_i,
+\qquad
+\forall i,s,d,t.
+\label{eq:nodal_carbon_cap}
+\end{equation}
+
+In \eqref{eq:nodal_carbon_balance}, the left-hand side is the nodal
+carbon intensity multiplied by the total incoming power. The right-hand
+side contains carbon flows from local generation, the upstream grid,
+storage discharge, and neighboring buses. Photovoltaic generation is
+assumed to have zero operational carbon intensity; therefore, its power
+appears in the total incoming power but contributes no carbon flow.
+Parameter $\overline{\mathscr{w}}_i$ is a bus-specific hard cap and no
+carbon-intensity slack variable is introduced.
+
+For interpretation, define the incoming power and carbon flow excluding
+storage discharge as
+\begin{align}
+A_{i,s,d,t}^{C}
+=
+&
+\sum_{g\in\mathcal{G}_i}
+P_{g,s,d,t}
++
+P_{i,s,d,t}^{\mathrm{PV}}
++
+\delta_{i0}
+P_{s,d,t}^{\mathrm{grid}}
+\nonumber\\
+&
++
+\sum_{h:(h,i)\in\mathcal{L}}P_{hi,s,d,t}^{+}
++
+\sum_{j:(i,j)\in\mathcal{L}}P_{ij,s,d,t}^{-},
+\label{eq:other_input_power}\\
+B_{i,s,d,t}^{C}
+=
+&
+\sum_{g\in\mathcal{G}_i}
+\mathscr{w}_{i,g,s,d,t}^{G}
+P_{g,s,d,t}
++
+\delta_{i0}
+\mathscr{w}_{s,d,t}^{\mathrm{grid}}
+P_{s,d,t}^{\mathrm{grid}}
+\nonumber\\
+&
++
+\sum_{h:(h,i)\in\mathcal{L}}
+\mathscr{w}_{h,s,d,t}P_{hi,s,d,t}^{+}
++
+\sum_{j:(i,j)\in\mathcal{L}}
+\mathscr{w}_{j,s,d,t}P_{ij,s,d,t}^{-}.
+\label{eq:other_input_carbon}
+\end{align}
+Combining \eqref{eq:nodal_carbon_balance} and
+\eqref{eq:nodal_carbon_cap} yields
+\begin{equation}
+\sum_{k\in\mathcal{K}}
+\left(
+\overline{\mathscr{w}}_i
+-
+\mathscr{w}_{i,k,s}^{\mathrm{es}}
+\right)
+P_{i,k,s,d,t}^{\mathrm{es,dc}}
+\geq
+D_{i,s,d,t}^{C},
+\label{eq:carbon_gap_constraint}
+\end{equation}
+where
+\begin{equation}
+D_{i,s,d,t}^{C}
+=
+B_{i,s,d,t}^{C}
+-
+\overline{\mathscr{w}}_i
+A_{i,s,d,t}^{C}.
+\label{eq:carbon_gap}
+\end{equation}
+
+A positive $D_{i,s,d,t}^{C}$ indicates that storage or other low-carbon
+resources are required to satisfy the nodal cap. The carbon-intensity
+reduction capability per unit discharge of layer $k$ is
+$\overline{\mathscr{w}}_i-\mathscr{w}_{i,k,s}^{\mathrm{es}}$. Hence, a
+lower-carbon layer provides a larger reduction capability. If the
+available low-carbon layers are insufficient, the first-stage model must
+increase storage power or energy capacity, alter the installation
+location, increase charging during preceding low-carbon intervals, or
+adjust the schedules of other resources.
+
+\emph{7) Complete Model:}
+Using the decision vectors introduced above, the primary problem is
+\begin{equation}
+\begin{aligned}
+\min_{\boldsymbol{x}^{\mathrm{pl}},\boldsymbol{y}^{\mathrm{op}}}
+\quad&
+C^{\mathrm{ann}}
+\\
+\mathrm{s.t.}
+\quad&
+(\boldsymbol{x}^{\mathrm{pl}},\boldsymbol{y}^{\mathrm{op}})
+\in
+\Omega,
+\end{aligned}
+\label{eq:compact_stage1}
+\end{equation}
+where $\Omega$ is the feasible set defined by
+\eqref{eq:peak_constraint}, \eqref{eq:backlog_dynamic}--\eqref{eq:DC_shedding_limit},
+\eqref{eq:storage_power_capacity}--\eqref{eq:block_carbon_cycle},
+\eqref{eq:generator_active_limit}--\eqref{eq:grid_purchase_limit}, and
+\eqref{eq:nodal_active_balance}--\eqref{eq:nodal_carbon_cap}.
+
+The second-stage model is
+\begin{equation}
+\begin{aligned}
+\min_{\boldsymbol{y}^{\mathrm{op}}}
+\quad&
+J^{\mathrm{res}}
+\\
+\mathrm{s.t.}
+\quad&
+\eqref{eq:fix_siting}
+-
+\eqref{eq:economic_equivalence},
+\\
+&
+(\boldsymbol{x}^{\mathrm{pl},*},\boldsymbol{y}^{\mathrm{op}})
+\in
+\Omega.
+\end{aligned}
+\label{eq:compact_stage2}
+\end{equation}
+
+Both stages are mixed-integer nonlinear programs because of the operating
+binaries and bilinear carbon-accounting terms. Fixing the operating
+binaries after Stage I reduces Stage II to a nonlinear program.
+
+
+\begin{thebibliography}{2}
+
+\bibitem{Baran1989DistFlow}
+M.~E. Baran and F.~F. Wu, ``Optimal sizing of capacitors placed on a
+radial distribution system,'' \emph{IEEE Trans. Power Del.}, vol.~4,
+no.~1, pp.~735--743, Jan.~1989.
+
+\bibitem{chen2025copf}
+X.~Chen, A.~Sun, W.~Shi, and N.~Li, ``Carbon-aware optimal power flow,'' \emph{IEEE Trans. Power Syst.}, vol.~40, no.~4, pp.~3090--3104, Jul.~2025.
+
+\end{thebibliography}
+
+\end{document}

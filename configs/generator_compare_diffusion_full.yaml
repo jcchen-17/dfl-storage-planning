@@ -89,6 +89,19 @@ dfl:
   decision_deadband_relative: 0.005
   device: auto
 
+data_center:
+  # Facility power = non_it_mw + PUE * (it_base_mw + it_workload_mw * processed).
+  # Three times the original edge-scale coefficients: 0.44-1.45 MW peak, about
+  # 42% of feeder load, a small enterprise data center. Hosting it requires the
+  # 671-692-675 branch uprated to 4.0 MVA; the original 2.5 MVA rating was
+  # already marginal for the 0.48 MW facility.
+  # These coefficients affect planning only. The dataset carries dimensionless
+  # workload and PUE series, so rescaling here never invalidates a trained
+  # generator.
+  non_it_mw: 0.09
+  it_base_mw: 0.36
+  it_workload_mw: 0.90
+
 planning:
   max_storage_sites: 1
   initial_soc: 0.20
@@ -101,12 +114,18 @@ planning:
   # carbon cycles when no charging source matches the initial inventory CI.
   self_discharge: 0.0
   min_power_mw: 0.05
-  max_power_mw: 1.20
+  # Relaxed for the 3x data center. The previous solution sat at 92% of a 4.0 h
+  # duration cap, so the cap would have bound and set the design instead of the
+  # economics. Report whether the optimum stays interior.
+  max_power_mw: 2.00
   min_energy_mwh: 0.10
-  max_energy_mwh: 3.00
+  max_energy_mwh: 8.00
   min_duration_hours: 1.0
-  max_duration_hours: 4.0
+  max_duration_hours: 8.0
   grid_limit_mw: 5.0
+  # Backup generator, sized against the facility it backs up.
+  backup_generator_mw: 2.0
+  backup_generator_mvar: 1.6
   carbon_intensity_max: 1.20
   dc_carbon_cap: 0.62
   other_bus_carbon_cap: 1.10
