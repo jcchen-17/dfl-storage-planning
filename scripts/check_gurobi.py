@@ -27,6 +27,17 @@ def find_license_files() -> list[Path]:
     from_env = os.environ.get("GRB_LICENSE_FILE")
     if from_env:
         candidates.append(Path(from_env))
+    # The installation directory is a common place for it and is easy to miss,
+    # because GUROBI_HOME points at the platform subdirectory rather than the
+    # release root.
+    install_root = os.environ.get("GUROBI_HOME")
+    if install_root:
+        base = Path(install_root)
+        candidates += [
+            base / "gurobi.lic",
+            base / "bin" / "gurobi.lic",
+            base.parent / "gurobi.lic",
+        ]
     home = Path.home()
     candidates += [
         home / "gurobi.lic",
@@ -36,7 +47,7 @@ def find_license_files() -> list[Path]:
         Path("/usr/local/lib/gurobi.lic"),
     ]
     for drive in ("C:", "D:", "E:", "F:"):
-        for pattern in ("gurobi*/gurobi.lic",):
+        for pattern in ("gurobi*/gurobi.lic", "gurobi*/*/gurobi.lic"):
             candidates += list(Path(f"{drive}/").glob(pattern))
     seen, found = set(), []
     for path in candidates:
@@ -82,6 +93,38 @@ def find_installation() -> list[str]:
     return found
 
 
+def run_gurobi_cl() -> str:
+    """Ask the installed command-line tool for its version and license state."""
+
+    import shutil
+    import subprocess
+
+    executable = shutil.which("gurobi_cl")
+    if executable is None:
+        install_root = os.environ.get("GUROBI_HOME")
+        if install_root:
+            for candidate in (
+                Path(install_root) / "bin" / "gurobi_cl.exe",
+                Path(install_root) / "bin" / "gurobi_cl",
+            ):
+                if candidate.is_file():
+                    executable = str(candidate)
+                    break
+    if executable is None:
+        return ""
+    try:
+        completed = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"(could not run gurobi_cl: {exc})"
+    return (completed.stdout + completed.stderr).strip()
+
+
 def main() -> None:
     print("=" * 68)
     print("Gurobi availability")
@@ -108,6 +151,15 @@ def main() -> None:
         print("\nstandalone installs:")
         for entry in installations:
             print(f"  {entry}")
+
+    # gurobi_cl is the authority on both the installed version and whether the
+    # license it can see actually works, so ask it rather than inferring.
+    banner = run_gurobi_cl()
+    if banner:
+        print("\ngurobi_cl --version:")
+        for line in banner.splitlines():
+            if line.strip():
+                print(f"  {line.strip()}")
 
     print()
     try:
