@@ -135,6 +135,10 @@ planning:
   carbon_formulation: mccormick
   flow_limit_formulation: polygon
   solver_time_limit_seconds: 900
+  # Which solver builds and solves the planning problem: scip | gurobi.
+  # The production formulation is a pure MILP, where the gap between solvers is
+  # widest. Gurobi needs gurobipy plus a license large enough for this model.
+  solver_backend: scip
   solver_relative_gap: 0.005
   solver_threads: 4
   # Search strategy. These reorder SCIP's search without changing the model, so
