@@ -1,0 +1,119 @@
+"""Report whether this machine can actually solve the planning model with Gurobi.
+
+Three things have to line up and each fails differently:
+
+* a license has to be found at all;
+* its major version has to cover the installed gurobipy, because a license
+  covers its own version and earlier ones but not later ones;
+* it has to be unrestricted, since the license bundled with the pip package
+  stops at 2000 variables while this model has tens of thousands.
+
+The last check is the decisive one, so it solves a model deliberately larger
+than the restricted limit rather than trusting the file's contents.
+
+    python scripts/check_gurobi.py
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+PROBE_VARIABLES = 5000  # comfortably past the 2000-variable restricted limit
+
+
+def find_license_files() -> list[Path]:
+    candidates = []
+    from_env = os.environ.get("GRB_LICENSE_FILE")
+    if from_env:
+        candidates.append(Path(from_env))
+    home = Path.home()
+    candidates += [
+        home / "gurobi.lic",
+        home / ".gurobi" / "gurobi.lic",
+        Path("C:/gurobi/gurobi.lic"),
+        Path("/opt/gurobi/gurobi.lic"),
+        Path("/usr/local/lib/gurobi.lic"),
+    ]
+    for drive in ("C:", "D:", "E:", "F:"):
+        for pattern in ("gurobi*/gurobi.lic",):
+            candidates += list(Path(f"{drive}/").glob(pattern))
+    seen, found = set(), []
+    for path in candidates:
+        try:
+            if path.is_file() and path not in seen:
+                seen.add(path)
+                found.append(path)
+        except OSError:
+            continue
+    return found
+
+
+def describe(path: Path) -> dict[str, str]:
+    fields = {}
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "=" in line and not line.startswith("#"):
+                key, _, value = line.partition("=")
+                key = key.strip().upper()
+                # Key material is not needed to judge the license and should not
+                # be echoed to a terminal or a log.
+                fields[key] = "<redacted>" if key in {"KEY", "CKEY"} else value.strip()
+    except OSError as exc:
+        fields["ERROR"] = str(exc)
+    return fields
+
+
+def main() -> None:
+    print("=" * 68)
+    print("Gurobi availability")
+    print("=" * 68)
+
+    try:
+        import gurobipy as gp
+    except ImportError:
+        print("gurobipy    : NOT INSTALLED")
+        print("\nInstall it with `python -m pip install gurobipy==<major>.*`,")
+        print("matching the major version of the license you hold.")
+        return
+
+    library_version = gp.gurobi.version()
+    print(f"gurobipy    : {'.'.join(map(str, library_version))}")
+    print(f"GRB_LICENSE_FILE: {os.environ.get('GRB_LICENSE_FILE', '(not set)')}")
+
+    licenses = find_license_files()
+    print(f"\nlicense files found: {len(licenses)}")
+    for path in licenses:
+        fields = describe(path)
+        version = fields.get("VERSION", "?")
+        print(f"\n  {path}")
+        for key in ("TYPE", "VERSION", "EXPIRATION", "HOSTNAME", "HOSTID", "CORES"):
+            if key in fields:
+                print(f"    {key:<11} {fields[key]}")
+        if version.isdigit() and int(version) < library_version[0]:
+            print(f"    -> MISMATCH: covers Gurobi {version}, but gurobipy is "
+                  f"{library_version[0]}. Install gurobipy=={version}.* instead.")
+
+    print("\n" + "-" * 68)
+    print(f"solving a {PROBE_VARIABLES}-variable model to test the real limit")
+    print("-" * 68)
+    try:
+        model = gp.Model()
+        model.setParam("OutputFlag", 0)
+        variables = model.addVars(PROBE_VARIABLES, vtype=gp.GRB.BINARY)
+        model.setObjective(gp.quicksum(variables.values()))
+        model.addConstr(gp.quicksum(variables.values()) >= PROBE_VARIABLES // 2)
+        model.optimize()
+        print(f"RESULT: usable. Solved {PROBE_VARIABLES} binaries, objective "
+              f"{model.ObjVal:.0f}.")
+        print("\nSet `solver_backend: gurobi` under `planning:` in the config.")
+    except gp.GurobiError as exc:
+        print(f"RESULT: NOT usable -- {exc}")
+        print("\nThe planning model has tens of thousands of variables, so a")
+        print("size-limited license cannot run it. Request a free academic")
+        print("license at https://www.gurobi.com/academia/ and activate it with")
+        print("grbgetkey while on the university network.")
+
+
+if __name__ == "__main__":
+    main()
