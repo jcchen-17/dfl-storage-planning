@@ -69,13 +69,13 @@ dfl:
   final_validation_size: 6
   learning_rate: 0.01
   baseline_momentum: 0.75
-  initial_exploration_std: 0.30
-  minimum_exploration_std: 0.08
-  exploration_decay: 0.90
+  initial_exploration_std: 0.80
+  minimum_exploration_std: 0.15
+  exploration_decay: 0.92
   diversity_margin: 0.80
   diversity_weight: 0.05
   weight_entropy_weight: 0.005
-  policy_samples_per_epoch: 3
+  policy_samples_per_epoch: 4
   latent_prior_weight: 0.001
   candidate_pool_size: 12
   bo_initial_evaluations: 6
@@ -131,11 +131,11 @@ costs:
   # turnkey benchmark so storage can still be selected, but they remove the
   # unrealistically cheap $58/kWh four-hour system used by the strong-storage
   # sensitivity case.
-  capital_recovery_factor: 0.10
-  site_dollars: 25000.0
-  power_dollars_per_mw: 150000.0
-  energy_dollars_per_mwh: 150000.0
-  degradation_dollars_per_mwh: 8.0
+  capital_recovery_factor: 0.09
+  site_dollars: 20000.0
+  power_dollars_per_mw: 130000.0
+  energy_dollars_per_mwh: 120000.0
+  degradation_dollars_per_mwh: 6.0
   demand_dollars_per_mw_year: 150000.0
   generator_dollars_per_mwh: 250.0
   delay_dollars_per_task_hour: 8.0
