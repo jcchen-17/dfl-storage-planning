@@ -117,19 +117,11 @@ planning:
   # Relaxed for the 3x data center. The previous solution sat at 92% of a 4.0 h
   # duration cap, so the cap would have bound and set the design instead of the
   # economics. Report whether the optimum stays interior.
-<<<<<<< HEAD
-  max_power_mw: 1.50
-  min_energy_mwh: 0.10
-  max_energy_mwh: 6.00
-  min_duration_hours: 1.0
-  max_duration_hours: 6.0
-=======
   max_power_mw: 1.5
   min_energy_mwh: 0.10
   max_energy_mwh: 5.00
   min_duration_hours: 1.0
   max_duration_hours: 4.0
->>>>>>> 7e011a5 (parameter revision)
   grid_limit_mw: 5.0
   # Backup generator, sized against the facility it backs up.
   backup_generator_mw: 2.0
@@ -161,11 +153,9 @@ planning:
   # cached per scenario set, so the fixed validation set pays it once for the
   # whole run and only the per-sample planning solves pay it repeatedly. Lower
   # this first if the bootstrap dominates wall-clock time.
-<<<<<<< HEAD
-  warm_start_time_limit_seconds: 120
-=======
+
   warm_start_time_limit_seconds: 300
->>>>>>> 7e011a5 (parameter revision)
+
 
 costs:
   # Calibrated commercial-microgrid case. These costs remain below a current
