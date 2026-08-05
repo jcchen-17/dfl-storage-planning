@@ -11,7 +11,7 @@ from storage_dfl.config import DFLConfig
 from storage_dfl.data import Scenario, ScenarioCodec, ScenarioPool
 from storage_dfl.dfl.support import DirectSupportPolicy
 from storage_dfl.models import ConditionalGenerator
-from storage_dfl.planning import PlanningResult, StoragePlanningOracle
+from storage_dfl.planning import PlanningJob, PlanningResult, StoragePlanningOracle
 
 
 @dataclass(frozen=True)
@@ -199,20 +199,35 @@ def train_direct_generator(
             samples.append((sample, generated, weights))
 
         plans = oracle.solve_many(
-            [(generated, weights) for _, generated, weights in samples]
+            [PlanningJob(generated, weights) for _, generated, weights in samples]
+        )
+        # The validations of one epoch share the fixed scenario set and differ
+        # only in the design they fix, so they batch exactly like the planning
+        # solves above.  Solved inside the loop below they left every worker but
+        # one idle for that half of the epoch.
+        validated_indices = [index for index, plan in enumerate(plans) if plan.feasible]
+        validations = dict(
+            zip(
+                validated_indices,
+                oracle.solve_many(
+                    [
+                        PlanningJob(
+                            validation_scenarios, fixed_design=plans[index].design
+                        )
+                        for index in validated_indices
+                    ],
+                    allow_carbon_slack=True,
+                    use_cache=True,
+                ),
+                strict=True,
+            )
         )
         for sample_index, ((sample, generated, weights), plan) in enumerate(
             zip(samples, plans, strict=True)
         ):
-            if plan.feasible:
-                validation = oracle.solve(
-                    validation_scenarios,
-                    fixed_design=plan.design,
-                    allow_carbon_slack=True,
-                    use_cache=True,
-                )
-            else:
-                validation = plan
+            # An infeasible plan has no design to validate, so it stands in for
+            # its own validation, as it did when the two solves were adjacent.
+            validation = validations.get(sample_index, plan)
             decision_loss = _finite_loss(validation)
             if decision_loss >= INFEASIBLE_LOSS:
                 infeasible_samples += 1

@@ -24,7 +24,12 @@ from storage_dfl.config import (
     GANConfig,
     load_config,
 )
-from storage_dfl.dfl.trainer import INFEASIBLE_LOSS, _rank_advantages, _safe_number
+from storage_dfl.dfl.trainer import (
+    INFEASIBLE_LOSS,
+    _rank_advantages,
+    _safe_number,
+    train_direct_generator,
+)
 from storage_dfl.planning.model import StoragePlanningOracle
 from storage_dfl.models import (
     ConditionalDiffusion,
@@ -36,7 +41,8 @@ from storage_dfl.models import (
 )
 from storage_dfl.models.metrics import precision_recall, wasserstein_1d
 from storage_dfl.network import ieee13_unbalanced_microgrid
-from storage_dfl.planning import PlanningResult, StorageDesign
+from storage_dfl.planning import PlanningJob, PlanningResult, StorageDesign
+from storage_dfl.planning.results import infeasible_result
 from storage_dfl.dfl.scenario_bo import train_scenario_bo
 
 
@@ -391,6 +397,181 @@ def test_warm_start_cache_is_shared_across_designs() -> None:
     # Idle storage is not a valid seed once the inventory decays.
     assert decaying_oracle._warm_start_supported(None)
     assert not decaying_oracle._warm_start_supported(design)
+
+
+def test_reinforce_epoch_batches_its_validations_and_keeps_them_aligned() -> None:
+    feeder = ieee13_unbalanced_microgrid()
+    pool = make_toy_scenarios(feeder, num_scenarios=8, horizon=6, seed=29)
+    codec = ScenarioCodec.fit(pool, feeder)
+    cvae = ConditionalVAE(
+        trajectory_dim=codec.trajectory_dim,
+        context_dim=codec.context_dim,
+        latent_dim=4,
+        hidden_dim=16,
+    )
+    buses = feeder.storage_candidates
+    batch_sizes = []
+
+    def result_for(scenarios, design, objective) -> PlanningResult:
+        return PlanningResult(
+            status="optimal",
+            objective=objective,
+            investment_cost=0.0,
+            operating_cost=objective,
+            carbon_slack_cost=0.0,
+            peak_grid_mw=1.0,
+            design=design,
+            scenario_names=tuple(s.name for s in scenarios),
+            solve_time_seconds=0.01,
+            relative_gap=0.0,
+        )
+
+    class FakeOracle:
+        """Prices a design by its power rating and fails every second sample.
+
+        The infeasible samples are the point: their plans carry no design, so they
+        are absent from the validation batch and the trainer has to realign what
+        comes back with the samples it drew.
+        """
+
+        def solve(self, scenarios, *, weights=None, fixed_design=None, **kwargs):
+            scenario_tuple = tuple(scenarios)
+            if fixed_design is not None:
+                return result_for(
+                    scenario_tuple,
+                    fixed_design,
+                    100.0 - 10.0 * fixed_design.power_mw.get("680", 0.0),
+                )
+            # Sample scenarios are named dfl_e000_s01_*; the final deterministic
+            # solve is not, and always succeeds.
+            parts = scenario_tuple[0].name.split("_s")
+            index = int(parts[1][:2]) if len(parts) > 1 else 0
+            power = 0.1 * (index + 1)
+            design = StorageDesign(
+                site={bus: int(bus == "680") for bus in buses},
+                power_mw={bus: (power if bus == "680" else 0.0) for bus in buses},
+                energy_mwh={bus: (0.5 if bus == "680" else 0.0) for bus in buses},
+            )
+            if index % 2 == 1:
+                return infeasible_result(
+                    "infeasible", buses, tuple(s.name for s in scenario_tuple), 0.01
+                )
+            return result_for(scenario_tuple, design, 50.0 + power)
+
+        def solve_many(self, jobs, *, allow_carbon_slack=False, use_cache=False):
+            jobs = list(jobs)
+            batch_sizes.append(len(jobs))
+            return [
+                self.solve(
+                    job.scenarios,
+                    weights=job.weights,
+                    fixed_design=job.fixed_design,
+                    allow_carbon_slack=allow_carbon_slack,
+                    use_cache=use_cache,
+                )
+                for job in jobs
+            ]
+
+    config = DFLConfig(
+        num_support_scenarios=2,
+        epochs=1,
+        validation_batch_size=2,
+        final_validation_size=2,
+        learning_rate=0.01,
+        baseline_momentum=0.75,
+        initial_exploration_std=0.2,
+        minimum_exploration_std=0.1,
+        exploration_decay=0.9,
+        diversity_margin=0.8,
+        diversity_weight=0.05,
+        weight_entropy_weight=0.005,
+        device="cpu",
+        method="reinforce",
+        policy_samples_per_epoch=4,
+    )
+    policy = DirectSupportPolicy(
+        support_count=config.num_support_scenarios, latent_dim=4, seed=5
+    )
+    result = train_direct_generator(policy, cvae, codec, pool, FakeOracle(), config, seed=3)
+
+    # One batch of four plans, then one batch holding only the feasible half.
+    assert batch_sizes == [4, 2]
+    record = result.history[0]
+    assert record.policy_samples == 4
+    # Two of the four samples were infeasible, and the winner is the survivor
+    # with the cheaper validation, which is the one whose design is larger.
+    assert record.validation_objective < INFEASIBLE_LOSS
+    assert result.planning_result.feasible
+
+
+def test_solve_many_batches_fixed_designs_without_repeating_the_bootstrap() -> None:
+    config = load_config(Path(__file__).resolve().parents[1] / "configs" / "smoke.yaml")
+    feeder = ieee13_unbalanced_microgrid()
+    planning = replace(config.planning, solver_max_parallel_workers=4)
+    oracle = StoragePlanningOracle(feeder, planning, config.costs, config.data)
+    pool = make_toy_scenarios(feeder, num_scenarios=4, horizon=6, seed=17)
+
+    def design_at(power: float) -> StorageDesign:
+        return StorageDesign(
+            site={bus: int(bus == "680") for bus in feeder.storage_candidates},
+            power_mw={bus: (power if bus == "680" else 0.0) for bus in feeder.storage_candidates},
+            energy_mwh={bus: (0.5 if bus == "680" else 0.0) for bus in feeder.storage_candidates},
+        )
+
+    dispatched = []
+
+    def fake_worker(payload):
+        dispatched.append(payload)
+        result = PlanningResult(
+            status="optimal",
+            objective=float(payload["fixed_design"].power_mw["680"]),
+            investment_cost=0.0,
+            operating_cost=0.0,
+            carbon_slack_cost=0.0,
+            peak_grid_mw=0.0,
+            design=payload["fixed_design"],
+            scenario_names=tuple(s.name for s in payload["scenarios"]),
+            solve_time_seconds=0.0,
+            relative_gap=0.0,
+        )
+        computed = not payload["warm_start_cached"]
+        return result, ({"seed": 1.0} if computed else None), computed
+
+    # Exercise the concurrent path on any platform: it is the parent's bookkeeping
+    # that is under test, not the isolation it is predicated on.
+    oracle._isolation_active = lambda: True
+    oracle._run_worker = fake_worker
+
+    designs = [design_at(0.1), design_at(0.2), design_at(0.1), design_at(0.3)]
+    results = oracle.solve_many(
+        [PlanningJob(pool.scenarios, fixed_design=design) for design in designs],
+        allow_carbon_slack=True,
+        use_cache=True,
+    )
+
+    # Order follows the jobs, so the caller's sample indexing is unchanged.
+    assert [result.objective for result in results] == [0.1, 0.2, 0.1, 0.3]
+    # Three distinct designs over one scenario set: the repeat is served from the
+    # cache rather than dispatched a second time.
+    assert len(dispatched) == 3
+    # Those three share one bootstrap, so exactly one worker may compute it and
+    # the rest must inherit it through a later wave.
+    assert sum(not payload["warm_start_cached"] for payload in dispatched) == 1
+    assert dispatched[0]["fixed_design"].power_mw["680"] == 0.1
+
+    # A second batch over the same scenarios starts fully warm, so every job of
+    # it runs in one wave.
+    dispatched.clear()
+    oracle.solve_many(
+        [
+            PlanningJob(pool.scenarios, fixed_design=design_at(power))
+            for power in (0.4, 0.5)
+        ],
+        allow_carbon_slack=True,
+        use_cache=True,
+    )
+    assert len(dispatched) == 2
+    assert all(payload["warm_start_cached"] for payload in dispatched)
 
 
 def test_scenario_bo_features_selection_and_gp() -> None:

@@ -172,18 +172,17 @@ planning:
 
 
 costs:
-  # T2: plausible 2030 low-cost commercial BESS sensitivity. For a 4 h system,
-  # variable turnkey CAPEX is 130 $/kW + 4*120 $/kWh = 610 $/kW, or
-  # 152.5 $/kWh, before the modest site cost. CRF=0.08 represents long-lived,
-  # low-cost financing. The 180 $/kW-year demand charge is equivalent to
-  # 15 $/kW-month. These values strengthen the economic signal without changing
-  # feasibility constraints or imposing a minimum number of storage sites.
-  capital_recovery_factor: 0.08
-  site_dollars: 15000.0
-  power_dollars_per_mw: 130000.0
-  energy_dollars_per_mwh: 120000.0
-  degradation_dollars_per_mwh: 6.0
-  demand_dollars_per_mw_year: 180000.0
+  # T2: midpoint storage-economics sensitivity between K3T1 (storage was often
+  # rejected) and the former aggressive T2 values (storage hit both capacity
+  # bounds). For a 4 h system the variable CAPEX is 140 $/kW + 4*135 $/kWh =
+  # 680 $/kW, and its annualized variable cost is 61.2 $/kW-year. Storage stays
+  # optional; neither installation nor a minimum aggregate capacity is imposed.
+  capital_recovery_factor: 0.09
+  site_dollars: 20000.0
+  power_dollars_per_mw: 140000.0
+  energy_dollars_per_mwh: 135000.0
+  degradation_dollars_per_mwh: 7.0
+  demand_dollars_per_mw_year: 160000.0
   generator_dollars_per_mwh: 250.0
   delay_dollars_per_task_hour: 24.0
   curtailment_dollars_per_mwh: 4.0
@@ -192,6 +191,5 @@ costs:
 
 # Keep the T2 checkpoints and evaluation reports separate from K3T1.
 output_dir: outputs/generator_comparison_k3t2_48h
-
 
 

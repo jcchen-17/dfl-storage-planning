@@ -140,6 +140,20 @@ class _ModelArtifacts:
     carbon_slack_expression: object
 
 
+@dataclass(frozen=True)
+class PlanningJob:
+    """One solve within a ``solve_many`` batch.
+
+    Named rather than positional because a batch of fixed-design validations and
+    a batch of free planning solves differ only in the third field, and reading
+    ``(scenarios, None, design)`` at a call site gives no hint of that.
+    """
+
+    scenarios: Iterable[Scenario]
+    weights: Iterable[float] | None = None
+    fixed_design: StorageDesign | None = None
+
+
 def _add_mccormick_envelope(
     model: Model,
     product: object,
@@ -599,23 +613,34 @@ class StoragePlanningOracle:
 
     def solve_many(
         self,
-        jobs: Iterable[tuple[Iterable[Scenario], Iterable[float] | None]],
+        jobs: Iterable[PlanningJob | tuple[Iterable[Scenario], Iterable[float] | None]],
         *,
         allow_carbon_slack: bool = False,
+        use_cache: bool = False,
         max_workers: int | None = None,
     ) -> list[PlanningResult]:
-        """Solve several free-design planning problems, concurrently when possible.
+        """Solve several planning problems, concurrently when possible.
 
         The samples of one decision-focused epoch are independent, and each solve
         already runs in its own process, so the only thing serialising them was
         the loop itself.  Results are returned in the order the jobs were given,
         so the caller's sample indexing is unchanged.
 
+        Jobs may fix a design, which is what lets an epoch's validation solves
+        batch the same way its planning solves do: they share one scenario set
+        and differ only in the design being validated.
+
         Falls back to the ordinary serial path whenever process isolation is not
         in use, which keeps behaviour identical on platforms that never needed it.
         """
 
-        normalized = [self._normalize_job(scenarios, weights) for scenarios, weights in jobs]
+        requested = [
+            job if isinstance(job, PlanningJob) else PlanningJob(*job) for job in jobs
+        ]
+        normalized = [
+            (*self._normalize_job(job.scenarios, job.weights), job.fixed_design)
+            for job in requested
+        ]
         if not normalized:
             return []
 
@@ -623,46 +648,118 @@ class StoragePlanningOracle:
         workers = max(1, int(workers))
         if workers == 1 or len(normalized) == 1 or not self._isolation_active():
             return [
-                self.solve(scenarios, weights=weights, allow_carbon_slack=allow_carbon_slack)
-                for scenarios, weights in normalized
+                self.solve(
+                    scenarios,
+                    weights=weights,
+                    fixed_design=design,
+                    allow_carbon_slack=allow_carbon_slack,
+                    use_cache=use_cache,
+                )
+                for scenarios, weights, design in normalized
             ]
 
-        payloads = []
-        warm_start_keys = []
-        for scenarios, weights in normalized:
-            warm_start_key = self._warm_start_key(scenarios, weights, allow_carbon_slack)
-            warm_start_keys.append(warm_start_key)
-            cached = warm_start_key in self._warm_start_cache
-            payloads.append(
-                self._worker_payload(
-                    scenarios,
-                    weights,
-                    None,
-                    allow_carbon_slack,
-                    False,
-                    self._warm_start_cache.get(warm_start_key),
-                    cached,
-                )
+        results: list[PlanningResult | None] = [None] * len(normalized)
+        cache_keys = [
+            self._cache_key(scenarios, weights, design, allow_carbon_slack)
+            for scenarios, weights, design in normalized
+        ]
+        # Serial solving deduplicated repeats through the cache on the way past.
+        # A batch has to do it up front instead, or two samples that converged on
+        # the same design would each pay for the identical validation solve.
+        pending: list[int] = []
+        duplicate_of: dict[int, int] = {}
+        leaders: dict[tuple, int] = {}
+        for index, cache_key in enumerate(cache_keys):
+            if use_cache and cache_key in self._cache:
+                results[index] = self._cache[cache_key]
+                continue
+            if use_cache:
+                leader = leaders.get(cache_key)
+                if leader is not None:
+                    duplicate_of[index] = leader
+                    continue
+                leaders[cache_key] = index
+            pending.append(index)
+
+        # None marks a job that needs no bootstrap, so nothing is shared and it
+        # can go in any wave.
+        warm_start_keys: dict[int, tuple | None] = {}
+        for index in pending:
+            scenarios, weights, design = normalized[index]
+            warm_start_keys[index] = (
+                self._warm_start_key(scenarios, weights, allow_carbon_slack)
+                if self._warm_start_supported(design)
+                else None
             )
 
         from concurrent.futures import ThreadPoolExecutor
 
-        # Threads, not processes: each worker blocks in subprocess.run, which
-        # releases the GIL, and the real parallelism is between the child SCIP
-        # processes rather than inside this interpreter.
-        with ThreadPoolExecutor(max_workers=min(workers, len(payloads))) as pool:
-            responses = list(pool.map(self._run_worker, payloads))
+        remaining = pending
+        while remaining:
+            wave: list[int] = []
+            deferred: list[int] = []
+            claimed: set[tuple] = set()
+            for index in remaining:
+                warm_start_key = warm_start_keys[index]
+                if warm_start_key is None or warm_start_key in self._warm_start_cache:
+                    wave.append(index)
+                elif warm_start_key in claimed:
+                    # A job already in this wave is computing that bootstrap.
+                    # Every validation of an epoch shares one, and it costs up to
+                    # warm_start_time_limit_seconds, so waiting a wave to inherit
+                    # it beats having each worker recompute the same thing.
+                    deferred.append(index)
+                else:
+                    claimed.add(warm_start_key)
+                    wave.append(index)
 
-        # Merged here rather than in the workers so the cache is only mutated by
-        # this thread once every job has finished.
-        results = []
-        for warm_start_key, (result, warm_start_values, computed) in zip(
-            warm_start_keys, responses, strict=True
-        ):
-            if computed:
-                self._warm_start_cache[warm_start_key] = warm_start_values
-            results.append(result)
-        return results
+            payloads = []
+            for index in wave:
+                scenarios, weights, design = normalized[index]
+                warm_start_key = warm_start_keys[index]
+                payloads.append(
+                    self._worker_payload(
+                        scenarios,
+                        weights,
+                        design,
+                        allow_carbon_slack,
+                        False,
+                        self._warm_start_cache.get(warm_start_key)
+                        if warm_start_key is not None
+                        else None,
+                        warm_start_key is None
+                        or warm_start_key in self._warm_start_cache,
+                    )
+                )
+
+            # Threads, not processes: each worker blocks in subprocess.run, which
+            # releases the GIL, and the real parallelism is between the child SCIP
+            # processes rather than inside this interpreter.
+            with ThreadPoolExecutor(max_workers=min(workers, len(payloads))) as pool:
+                responses = list(pool.map(self._run_worker, payloads))
+
+            # Merged here rather than in the workers so the caches are only
+            # mutated by this thread once every job of the wave has finished.
+            for index, (result, warm_start_values, computed) in zip(
+                wave, responses, strict=True
+            ):
+                warm_start_key = warm_start_keys[index]
+                if computed and warm_start_key is not None:
+                    self._warm_start_cache[warm_start_key] = warm_start_values
+                results[index] = result
+                if use_cache:
+                    self._cache[cache_keys[index]] = result
+
+            remaining = deferred
+
+        for index, leader in duplicate_of.items():
+            results[index] = results[leader]
+        completed = [result for result in results if result is not None]
+        if len(completed) != len(results):
+            # Callers index this against their own sample list, so a short list
+            # would silently misattribute results rather than fail.
+            raise RuntimeError("A batched planning job returned no result.")
+        return completed
 
     def _worker_payload(
         self,

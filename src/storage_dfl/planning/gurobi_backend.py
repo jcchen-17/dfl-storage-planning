@@ -140,7 +140,12 @@ class GurobiModel:
             self._model.setParam("Presolve", 0 if int(value) == 0 else -1)
             return
         if name == "limits/memory":
-            self._model.setParam("MemLimit", float(value) / 1024.0)
+            # 'SoftMemLimit', not 'MemLimit': the latter raises OUT_OF_MEMORY and
+            # takes the run with it, which is the failure the budget exists to
+            # prevent.  The soft limit stops the solve at MEM_LIMIT (status 17,
+            # translated above) and keeps the incumbent, matching how SCIP's
+            # 'limits/memory' behaves and what the pipeline expects.
+            self._model.setParam("SoftMemLimit", float(value) / 1024.0)
             return
         translated = _PARAMETER_NAMES.get(name)
         if translated is None:
