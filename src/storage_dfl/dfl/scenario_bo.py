@@ -412,7 +412,14 @@ def train_scenario_bo(
             flush=True,
         )
         if writer is not None:
-            writer.add_scalar("bo/validation_objective", loss, evaluation)
+            # Same reason as the REINFORCE trainer: the infeasible sentinel is
+            # six orders of magnitude above a real objective and would flatten
+            # the plotted curve, so a failed evaluation is a count, not a value.
+            if loss < INFEASIBLE_LOSS:
+                writer.add_scalar("bo/validation_objective", loss, evaluation)
+            writer.add_scalar(
+                "bo/infeasible", float(loss >= INFEASIBLE_LOSS), evaluation
+            )
             writer.add_scalar("bo/observation_uncertainty", uncertainty, evaluation)
             writer.add_scalar("bo/planning_gap", float(plan.relative_gap), evaluation)
             writer.add_scalar("bo/validation_gap", relative_gap, evaluation)

@@ -76,7 +76,10 @@ dfl:
   diversity_margin: 0.80
   diversity_weight: 0.05
   weight_entropy_weight: 0.005
-  policy_samples_per_epoch: 3
+  # Search width of one epoch. Kept equal to the other generator-comparison
+  # arms, which were raised from 4 to 8 alongside K; this arm was at 3, so a
+  # comparison against them was already at a different search width.
+  policy_samples_per_epoch: 8
   latent_prior_weight: 0.001
   candidate_pool_size: 12
   bo_initial_evaluations: 6

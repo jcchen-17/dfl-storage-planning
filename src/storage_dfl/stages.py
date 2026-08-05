@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import csv
+import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,19 @@ def _read_json(path: Path) -> Any:
 
 
 def _summary_writer(path: Path, enabled: bool, config: ExperimentConfig):
+    """Open a TensorBoard writer in a directory unique to this run.
+
+    TensorBoard treats a directory as one run and merges every event file it
+    holds, so writing successive runs to a fixed path drew them as a single
+    series whose step counter restarted at zero each time.  A timestamped leaf
+    separates them in the run picker.
+
+    The leaf is only the timestamp, not the config name: the config already
+    determines ``output_dir``, so its name is present further up the path, and
+    the event file names TensorBoard generates are long enough that a second
+    label risks the 260-character path limit on Windows.
+    """
+
     if not enabled:
         return None
     try:
@@ -91,7 +105,7 @@ def _summary_writer(path: Path, enabled: bool, config: ExperimentConfig):
         raise RuntimeError(
             "TensorBoard is not installed. Run `python -m pip install tensorboard`."
         ) from exc
-    writer = SummaryWriter(log_dir=str(path))
+    writer = SummaryWriter(log_dir=str(path / time.strftime("%Y%m%d-%H%M%S")))
     writer.add_text("experiment/config", f"```json\n{json.dumps(asdict(config), default=str, indent=2)}\n```")
     return writer
 

@@ -182,6 +182,7 @@ def train_direct_generator(
         )
         validation_scenarios = fixed_validation_scenarios
         candidates = []
+        infeasible_in_epoch = 0
         # Every sample of an epoch is drawn before any is solved. The draws keep
         # their original order, so the policy's random stream is unchanged, but
         # the planning solves can then be dispatched together.
@@ -231,6 +232,7 @@ def train_direct_generator(
             decision_loss = _finite_loss(validation)
             if decision_loss >= INFEASIBLE_LOSS:
                 infeasible_samples += 1
+                infeasible_in_epoch += 1
             candidates.append((sample, generated, weights, plan, validation, decision_loss))
             print(
                 f"DFL epoch {epoch + 1}/{config.epochs} sample "
@@ -324,10 +326,25 @@ def train_direct_generator(
             )
         )
         if writer is not None:
-            writer.add_scalar("loss/decision", _safe_number(mean_decision_loss, INFEASIBLE_LOSS), epoch)
-            writer.add_scalar("objective/planning", _safe_number(plan.objective, INFEASIBLE_LOSS), epoch)
-            writer.add_scalar("objective/validation", _safe_number(validation.objective, INFEASIBLE_LOSS), epoch)
-            writer.add_scalar("objective/carbon_slack", _safe_number(validation.carbon_slack_cost, 0.0), epoch)
+            # The infeasible sentinel is 1e12 and real objectives are around 1e6,
+            # so writing it as a value put the y-axis six orders of magnitude
+            # above every real point and flattened the curve to nothing. Averaging
+            # it in was just as destructive: one infeasible sample out of five
+            # still lands the mean at 2e11. Only feasible costs are plotted, and
+            # the failures are plotted as a count on their own axis. The JSON
+            # history keeps the sentinel form, which it needs to stay NaN-free.
+            feasible_mean = (
+                float(feasible_losses.mean()) if feasible_losses.size else float("inf")
+            )
+            for tag, value in (
+                ("loss/decision", feasible_mean),
+                ("objective/planning", plan.objective),
+                ("objective/validation", validation.objective),
+                ("objective/carbon_slack", validation.carbon_slack_cost),
+            ):
+                if isfinite(value) and value < INFEASIBLE_LOSS:
+                    writer.add_scalar(tag, float(value), epoch)
+            writer.add_scalar("loss/infeasible_samples", infeasible_in_epoch, epoch)
             writer.add_scalar("policy/exploration_std", exploration_std, epoch)
             writer.add_scalar("policy/distinct_designs", len(design_signatures), epoch)
             writer.add_scalar("policy/latent_prior", float(policy.latent_prior_penalty().detach().cpu()), epoch)

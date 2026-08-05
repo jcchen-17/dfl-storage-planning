@@ -61,7 +61,13 @@ def test_ieee13_is_radial() -> None:
         if capacity > 0.0
     }
     assert pv_buses == {"634", "675", "680"}
-    assert feeder.storage_candidates == ("632", "671", "675", "680")
+    # Every candidate must be a three-phase bus: storage power is divided over
+    # the phases present, so a partial-phase candidate would silently model a
+    # single- or two-phase battery.
+    assert feeder.storage_candidates == ("632", "671", "675", "680", "692")
+    assert all(
+        len(feeder.bus_phases[bus]) == 3 for bus in feeder.storage_candidates
+    )
 
 
 def test_codec_cvae_and_direct_support() -> None:

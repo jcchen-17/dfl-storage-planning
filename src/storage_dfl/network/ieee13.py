@@ -168,7 +168,29 @@ def ieee13_unbalanced_microgrid() -> Feeder:
         base_active_load_mw=active,
         base_reactive_load_mvar=reactive,
         pv_capacity_mw=pv_capacity,
-        storage_candidates=("632", "671", "675", "680"),
+        # Five three-phase buses, each admitted for a distinct reason, so that no
+        # two candidates test the same siting argument:
+        #   632  feeder head, the only bus carrying the whole feeder's flow;
+        #   671  largest load (1.355 MW over ABC) and the backup generator bus;
+        #   675  the data-center bus, 0.843 MW of load plus 0.65 MW of PV;
+        #   680  largest PV (0.75 MW) with no local load, so the bus where
+        #        curtailment is most likely and charging is cheapest;
+        #   692  on the 671-692-675 branch that this study had to uprate to
+        #        4.0 MVA to host the data center. Storage here is the deferral
+        #        alternative to that upgrade, which is the classic non-wires
+        #        argument for siting; without it the study never tests it.
+        # Excluded, and why:
+        #   650  substation root. Storage there is grid-side and produces no
+        #        network effect in this formulation.
+        #   633, 684  pass-through buses with neither load nor PV.
+        #   634  three-phase with 0.40 MW of load and 0.25 MW of PV, but behind
+        #        the 3.0/2.0 MVA 632-633-634 lateral, which never binds here.
+        #        This is the nearest omission and the one to revisit first if a
+        #        solution ever sites storage upstream at 632.
+        #   645, 646, 611, 652  one- or two-phase. Storage power is split over
+        #        len(bus_phases[bus]), so a candidate here is a single- or
+        #        two-phase battery, which this study does not model.
+        storage_candidates=("632", "671", "675", "680", "692"),
         data_center_bus="675",
         generator_bus="671",
     )

@@ -79,7 +79,14 @@ dfl:
   initial_exploration_std: 0.80
   minimum_exploration_std: 0.15
   exploration_decay: 0.92g
-  policy_samples_per_epoch: 4
+  # Search width of one epoch. Raised with K: the policy now perturbs a
+  # K x latent_dim = 320-dimensional point, and four probes of that space are
+  # close to a random line search. It also halves the chance of an epoch where
+  # every sample yields the same design, which zeroes the decision gradient
+  # outright. Keep it a multiple of solver_max_parallel_workers, or the last
+  # wave of solves runs part-empty; 6 would cost two waves and fill one and a
+  # half. Two full waves at four workers.
+  policy_samples_per_epoch: 8
   diversity_margin: 0.80
   diversity_weight: 0.05
   weight_entropy_weight: 0.005
@@ -190,6 +197,8 @@ costs:
   validation_carbon_slack_dollars: 300000.0
 
 # Isolated from the calibrated run so retraining the generators cannot overwrite
-# its cvae.pt, normalization.json or DFL checkpoints.
-output_dir: outputs/generator_comparison_48h
+# its cvae.pt, normalization.json or DFL checkpoints. Also isolated per cost
+# case: k1t1, k1t2 and k3t1 previously shared one directory, so whichever ran
+# last silently overwrote the others' checkpoints, results and TensorBoard logs.
+output_dir: outputs/generator_comparison_k1t2_48h
 
