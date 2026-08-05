@@ -1,0 +1,188 @@
+﻿seed: 7
+
+data:
+  dataset_path: data/processed/ieee13_smartds_dfl/dfl_training_windows_48h_price_regimes.npz
+  train_split: train
+  validation_split: validation
+  test_split: test
+  horizon: 48
+  delta_t_hours: 1.0
+
+# Shared generator training settings, named `cvae` for backward compatibility.
+# The GAN and the diffusion model read the same latent size, width, epoch count,
+# batch size and field weights, so the three differ only in training objective.
+cvae:
+  latent_dim: 64
+  hidden_dim: 512
+  epochs: 250
+  learning_rate: 0.001
+  beta: 0.002
+  ramp_weight: 0.05
+  batch_size: 64
+  kl_warmup_epochs: 50
+  active_load_weight: 0.20
+  reactive_load_weight: 0.10
+  pv_weight: 0.20
+  workload_weight: 0.10
+  pue_weight: 0.05
+  price_weight: 0.25
+  carbon_weight: 0.10
+  net_load_weight: 0.15
+  net_peak_weight: 0.20
+  price_spread_weight: 0.20
+
+generator:
+  # cvae | gan | diffusion. Override per run with `--generator` instead of
+  # editing this, so one output directory can hold all three comparisons.
+  kind: cvae
+  gan:
+    critic_steps: 5
+    gradient_penalty: 10.0
+    critic_hidden_dim: 512
+    critic_learning_rate: 0.0002
+    generator_learning_rate: 0.0002
+    # A GAN sample has no paired observation, so peak net load and price spread
+    # are matched as batch moments rather than per scenario.
+    moment_weight: 10.0
+    encoder_epochs: 200
+    encoder_learning_rate: 0.001
+    latent_prior_weight: 0.01
+  diffusion:
+    timesteps: 400
+    sampling_steps: 50
+    beta_schedule: cosine
+    # `projected` confines the DDIM initial noise to a 64-dimensional subspace so
+    # the REINFORCE policy can search it. `full` gives the unrestricted 5,808-
+    # dimensional noise and can only be used for generative-quality comparison.
+    latent_mode: projected
+    blocks: 3
+    x_zero_clamp: 5.0
+    physics_weight: 0.1
+
+dfl:
+  method: reinforce
+  # REINFORCE learns one representative 48 h latent scenario. Its weight is
+  # fixed at 1.0 and its design is ranked on a fixed representative validation set.
+  num_support_scenarios: 3
+  epochs: 15
+  validation_batch_size: 6
+  final_validation_size: 6
+  learning_rate: 0.01
+  baseline_momentum: 0.75
+  initial_exploration_std: 0.80
+  minimum_exploration_std: 0.15
+  exploration_decay: 0.92g
+  policy_samples_per_epoch: 4
+  diversity_margin: 0.80
+  diversity_weight: 0.05
+  weight_entropy_weight: 0.005
+  latent_prior_weight: 0.001
+  candidate_pool_size: 12
+  bo_initial_evaluations: 6
+  bo_iterations: 6
+  bo_parameter_bound: 3.0
+  bo_candidate_draws: 512
+  bo_kernel_length_scale: 1.0
+  bo_exploration: 1.5
+  bo_weight_floor: 0.02
+  bo_finalists: 2
+  decision_deadband_relative: 0.005
+  device: auto
+
+data_center:
+  # Facility power = non_it_mw + PUE * (it_base_mw + it_workload_mw * processed).
+  # Three times the original edge-scale coefficients: 0.44-1.45 MW peak, about
+  # 42% of feeder load, a small enterprise data center. Hosting it requires the
+  # 671-692-675 branch uprated to 4.0 MVA; the original 2.5 MVA rating was
+  # already marginal for the 0.48 MW facility.
+  # These coefficients affect planning only. The dataset carries dimensionless
+  # workload and PUE series, so rescaling here never invalidates a trained
+  # generator.
+  non_it_mw: 0.09
+  it_base_mw: 0.36
+  it_workload_mw: 0.90
+
+planning:
+  max_storage_sites: 1
+  initial_soc: 0.20
+  initial_carbon_intensity: 0.28
+  min_soc: 0.10
+  max_soc: 0.90
+  charge_efficiency: 0.95
+  discharge_efficiency: 0.95
+  # A positive value can conflict with simultaneous hard terminal energy and
+  # carbon cycles when no charging source matches the initial inventory CI.
+  self_discharge: 0.0
+  min_power_mw: 0.05
+  # Relaxed for the 3x data center. The previous solution sat at 92% of a 4.0 h
+  # duration cap, so the cap would have bound and set the design instead of the
+  # economics. Report whether the optimum stays interior.
+  max_power_mw: 1.5
+  min_energy_mwh: 0.10
+  max_energy_mwh: 3.00
+  min_duration_hours: 1.0
+  max_duration_hours: 4.0
+  grid_limit_mw: 5.0
+  # Backup generator, sized against the facility it backs up.
+  backup_generator_mw: 1.0
+  backup_generator_mvar: 0.8
+  carbon_intensity_max: 1.20
+  dc_carbon_cap: 0.62
+  other_bus_carbon_cap: 1.10
+  # Keep charging-hour carbon vintages in the 48 h planning and DFL solves.
+  # McCormick envelopes retain the layered formulation without the nonconvex
+  # bilinear equalities used by the exact verification model.
+  carbon_formulation: mccormick
+  flow_limit_formulation: polygon
+  solver_time_limit_seconds: 900
+  # Which solver builds and solves the planning problem: scip | gurobi.
+  # The production formulation is a pure MILP, where the gap between solvers is
+  # widest. Gurobi needs gurobipy plus a license large enough for this model.
+  solver_backend: highs
+  solver_relative_gap: 0.005
+  solver_threads: 4
+  # Search strategy. These reorder SCIP's search without changing the model, so
+  # a solution found this way is exactly as valid; only the effort spent proving
+  # optimality shifts. Decision-focused training ranks samples by their incumbent
+  # objective, so reaching a good primal solution quickly is what matters.
+  solver_emphasis: feasibility
+  solver_aggressive_heuristics: true
+  # Samples within one DFL epoch are independent and each already solves in its
+  # own process, so this is the main lever on wall-clock time. Keep it at or
+  # below the physical core count.
+  solver_max_parallel_workers: 2
+  # Per-solve budget. Concurrency multiplies it, so keep
+  # workers x memory below usable RAM. Exceeding it yields a 'memorylimit'
+  # status with the incumbent kept, rather than an aborted process.
+  solver_memory_limit_mb: 0
+  verbose_solver: false
+  # Budget for the no-storage bootstrap that seeds each solve; 0 selects
+  # max(60 s, 30% of solver_time_limit_seconds) = 90 s here. The bootstrap is
+  # cached per scenario set, so the fixed validation set pays it once for the
+  # whole run and only the per-sample planning solves pay it repeatedly. Lower
+  # this first if the bootstrap dominates wall-clock time.
+
+  warm_start_time_limit_seconds: 300
+
+
+costs:
+  # Calibrated commercial-microgrid case. These costs remain below a current
+  # turnkey benchmark so storage can still be selected, but they remove the
+  # unrealistically cheap $58/kWh four-hour system used by the strong-storage
+  # sensitivity case.
+  capital_recovery_factor: 0.1
+  site_dollars: 25000.0
+  power_dollars_per_mw: 150000.0
+  energy_dollars_per_mwh: 150000.0
+  degradation_dollars_per_mwh: 8.0
+  demand_dollars_per_mw_year: 150000.0
+  generator_dollars_per_mwh: 250.0
+  delay_dollars_per_task_hour: 24.0
+  curtailment_dollars_per_mwh: 4.0
+  shedding_dollars_per_mwh: 10000.0
+  validation_carbon_slack_dollars: 300000.0
+
+# Isolated from the calibrated run so retraining the generators cannot overwrite
+# its cvae.pt, normalization.json or DFL checkpoints.
+output_dir: outputs/generator_comparison_48h
+
