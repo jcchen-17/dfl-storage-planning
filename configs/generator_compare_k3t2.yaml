@@ -67,9 +67,16 @@ generator:
 
 dfl:
   method: reinforce
-  # REINFORCE learns three representative 48 h latent scenarios and their
-  # weights; every candidate design is ranked on a fixed validation set.
-  num_support_scenarios: 3
+  # REINFORCE learns this many representative 48 h latent scenarios and their
+  # weights; every candidate design is ranked on a fixed validation set. The
+  # conditioning contexts are farthest-point anchors over
+  # [day-of-year, weekend, temperature, price regime], so they spread across the
+  # year on their own. At K=3 that spread was summer plus two winter days, with
+  # spring and autumn uncovered; K=5 is the first count that reaches all four
+  # seasons. Nothing here encodes an extreme or emergency day: the context has no
+  # such dimension, and decision-relevant extremes enter through the validation
+  # set instead (ScenarioCodec.support_indices).
+  num_support_scenarios: 5
   epochs: 15
   validation_batch_size: 6
   final_validation_size: 6

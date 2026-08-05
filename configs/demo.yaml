@@ -61,9 +61,10 @@ generator:
 
 dfl:
   method: reinforce
-  # REINFORCE learns one representative 48 h latent scenario. Its weight is
-  # fixed at 1.0 and its design is ranked on a fixed representative validation set.
-  num_support_scenarios: 3
+  # REINFORCE learns this many representative 48 h latent scenarios and their
+  # weights; every candidate design is ranked on a fixed validation set. Kept
+  # equal to the generator-comparison configs so the demo matches the runs.
+  num_support_scenarios: 5
   epochs: 12
   validation_batch_size: 6
   final_validation_size: 6
