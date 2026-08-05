@@ -80,7 +80,15 @@ dfl:
   epochs: 15
   validation_batch_size: 6
   final_validation_size: 6
-  learning_rate: 0.01
+  # Adam's step size is the per-epoch displacement of the policy mean, so this
+  # times `epochs` bounds how far the mean can travel in a whole run. At 0.01 the
+  # bound is 0.15 and realised travel is nearer 0.036, against a latent
+  # initialised at scale 0.28 and sampled with exploration_std 0.80 -> 0.15: the
+  # mean never leaves the cloud it is drawing from, and no number of epochs
+  # fixes that, since travel grows only as sqrt(epochs). Raising the step is the
+  # cheap lever. Not raised further: past ~0.05 the random component of the
+  # score-function estimator grows faster than the signal.
+  learning_rate: 0.03
   baseline_momentum: 0.75
   initial_exploration_std: 0.80
   minimum_exploration_std: 0.15

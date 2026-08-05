@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import asdict, dataclass
 from math import isfinite
 from typing import Any
@@ -164,6 +165,12 @@ def train_direct_generator(
     )
     fixed_validation_scenarios = observed_pool.subset(validation_indices.tolist())
 
+    # Displacement of the policy mean from where it started. Without it a run
+    # gives no way to tell "learned something" from "never moved": the score-
+    # function estimator normalizes through Adam, so a small step size can leave
+    # the mean well inside the exploration noise for the whole run while every
+    # other curve still looks alive.
+    initial_latent = policy.latent_location.detach().clone()
     baseline: float | None = None
     infeasible_samples = 0
     best_loss = float("inf")
@@ -173,8 +180,10 @@ def train_direct_generator(
     best_plan: PlanningResult | None = None
     records: list[EpochRecord] = []
 
+    epoch_seconds: list[float] = []
     for epoch in range(config.epochs):
         print(f"DFL epoch {epoch + 1}/{config.epochs}: solving planning candidates...", flush=True)
+        epoch_started = time.perf_counter()
         optimizer.zero_grad(set_to_none=True)
         exploration_std = max(
             config.minimum_exploration_std,
@@ -199,14 +208,17 @@ def train_direct_generator(
             weights = tuple(float(value) for value in sample.weights.cpu())
             samples.append((sample, generated, weights))
 
+        planning_started = time.perf_counter()
         plans = oracle.solve_many(
             [PlanningJob(generated, weights) for _, generated, weights in samples]
         )
+        planning_wall_seconds = time.perf_counter() - planning_started
         # The validations of one epoch share the fixed scenario set and differ
         # only in the design they fix, so they batch exactly like the planning
         # solves above.  Solved inside the loop below they left every worker but
         # one idle for that half of the epoch.
         validated_indices = [index for index, plan in enumerate(plans) if plan.feasible]
+        validation_started = time.perf_counter()
         validations = dict(
             zip(
                 validated_indices,
@@ -223,6 +235,7 @@ def train_direct_generator(
                 strict=True,
             )
         )
+        validation_wall_seconds = time.perf_counter() - validation_started
         for sample_index, ((sample, generated, weights), plan) in enumerate(
             zip(samples, plans, strict=True)
         ):
@@ -301,11 +314,32 @@ def train_direct_generator(
             best_latent = sample.latent.cpu().numpy().copy()
             best_plan = plan
 
+        latent_shift = float(
+            (policy.latent_location.detach() - initial_latent).abs().mean()
+        )
+        epoch_wall_seconds = time.perf_counter() - epoch_started
+        epoch_seconds.append(epoch_wall_seconds)
         print(
             f"DFL epoch {epoch + 1}/{config.epochs} best: "
             f"validation={validation.status}/{validation.objective:.6g}; "
             f"{_design_summary(plan)}; distinct_designs={len(design_signatures)}, "
             f"exploration_std={exploration_std:.4f}",
+            flush=True,
+        )
+        # Wall clock, not the solvers' own reported times: those exclude the
+        # queueing behind solver_max_parallel_workers, which is most of the
+        # difference between a batch and a serial loop. The remaining estimate
+        # uses the mean of the epochs completed so far, so it settles quickly.
+        remaining = (config.epochs - epoch - 1) * (
+            sum(epoch_seconds) / len(epoch_seconds)
+        )
+        print(
+            f"DFL epoch {epoch + 1}/{config.epochs} timing: "
+            f"{epoch_wall_seconds:.1f}s "
+            f"(planning {planning_wall_seconds:.1f}s + "
+            f"validation {validation_wall_seconds:.1f}s), "
+            f"latent_shift={latent_shift:.4f}, "
+            f"est. remaining {remaining / 60.0:.1f} min",
             flush=True,
         )
 
@@ -348,6 +382,13 @@ def train_direct_generator(
             writer.add_scalar("policy/exploration_std", exploration_std, epoch)
             writer.add_scalar("policy/distinct_designs", len(design_signatures), epoch)
             writer.add_scalar("policy/latent_prior", float(policy.latent_prior_penalty().detach().cpu()), epoch)
+            # Read against exploration_std on the same chart: while the shift
+            # stays far below it, the mean has not left the cloud it is sampling
+            # from and no amount of further epochs will show a decision effect.
+            writer.add_scalar("policy/latent_shift", latent_shift, epoch)
+            writer.add_scalar("time/epoch_seconds", epoch_wall_seconds, epoch)
+            writer.add_scalar("time/planning_seconds", planning_wall_seconds, epoch)
+            writer.add_scalar("time/validation_seconds", validation_wall_seconds, epoch)
             writer.add_scalar("design/installed_sites", len(plan.design.installed_buses), epoch)
             writer.add_scalar("design/power_mw", sum(plan.design.power_mw.values()), epoch)
             writer.add_scalar("design/energy_mwh", sum(plan.design.energy_mwh.values()), epoch)
