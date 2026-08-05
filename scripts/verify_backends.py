@@ -21,7 +21,7 @@ from storage_dfl.stages import ArtifactPaths, _experiment_data, _load_codec
 K = int(sys.argv[1]) if len(sys.argv) > 1 else 1
 TIME_LIMIT = float(sys.argv[2]) if len(sys.argv) > 2 else 300.0
 
-config = load_config("configs/generator_compare.yaml")
+config = load_config("configs/generator_compare_k3t1.yaml")
 feeder, pool = _experiment_data(config, config.data.validation_split)
 codec = _load_codec(ArtifactPaths(config.output_dir), feeder)
 scenarios, weights, labels = select_scenarios("kmeans", pool, codec, K, seed=0)
