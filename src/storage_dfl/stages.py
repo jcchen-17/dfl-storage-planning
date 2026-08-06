@@ -591,12 +591,29 @@ def evaluate_stage(
             f"Out-of-sample validation failed with status {validation.status!r} after "
             f"{validation.solve_time_seconds:.1f} seconds."
         )
+    # What the same scenarios cost with no storage at all. Total system cost is
+    # a poor denominator for comparing designs here -- the storage decision moves
+    # a few percent of it and every design pays the same untouchable remainder --
+    # so the difference against this reference is reported alongside it.
+    reference = StoragePlanningOracle(
+        feeder,
+        replace(config.planning, max_storage_sites=0),
+        config.costs,
+        config.data,
+        config.data_center,
+    ).solve(evaluation_pool.scenarios, allow_carbon_slack=True)
     payload = {
         "method": checkpoint.get("method", "reinforce"),
         "generator": checkpoint_generator,
         "device": str(device),
         "test_split": config.data.test_split,
         "test_scenarios_evaluated": len(evaluation_pool.scenarios),
+        "no_storage_reference": reference.to_dict(),
+        "storage_value": (
+            float(reference.objective) - float(validation.objective)
+            if reference.feasible
+            else None
+        ),
         "generated_scenarios": [
             {"name": scenario.name, "weight": weight, "context": scenario.context.tolist()}
             for scenario, weight in zip(generated, weights)

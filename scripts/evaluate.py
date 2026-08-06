@@ -48,9 +48,17 @@ def main() -> None:
     print(f"energy MWh: {planning['design']['energy_mwh']}")
     print(f"planning objective: {planning['objective']:.2f}")
     print(f"validation objective: {validation['objective']:.2f}")
+    reference = result["no_storage_reference"]
+    print(f"no-storage reference: {reference['objective']:.2f}")
+    if result["storage_value"] is not None:
+        print(f"storage value: {result['storage_value']:.2f}")
     # An objective from a solve that stopped early is an incumbent nobody bounded,
     # so it must not be compared with a converged baseline without saying so.
-    for label, entry in (("planning", planning), ("out-of-sample", validation)):
+    for label, entry in (
+        ("planning", planning),
+        ("out-of-sample", validation),
+        ("no-storage reference", reference),
+    ):
         if entry["status"] != "optimal":
             print(
                 f"WARNING: the {label} solve stopped at {entry['status']!r}; its "

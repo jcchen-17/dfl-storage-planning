@@ -55,6 +55,15 @@ COLUMNS = (
     "duration_h",
     "at_bound",
     "out_of_sample_objective",
+    # Total system cost is the wrong denominator for comparing these rules. The
+    # storage decision moves about 3.6% of it and every rule pays the same
+    # untouchable remainder, so differences that are large relative to what the
+    # decision is worth arrive looking like rounding. storage_value is the same
+    # number measured against the no-storage case on the same scenarios: it is
+    # what installing storage saved, and comparing how much of it each rule
+    # captured is the comparison the sweep is actually for.
+    "no_storage_objective",
+    "storage_value",
     "out_of_sample_carbon_slack",
     "out_of_sample_status",
     "out_of_sample_seconds",
@@ -174,6 +183,31 @@ def main() -> None:
     oracle = StoragePlanningOracle(
         feeder, planning, config.costs, config.data, data_center
     )
+    # One solve, shared by every row: the rules are all evaluated on this same
+    # test subset, so what the system costs without storage is a constant here.
+    # Subtracting it does not reorder anything -- it changes the denominator, so
+    # a difference can be read against what the decision is worth rather than
+    # against a total that is mostly untouchable.
+    print("solving the no-storage reference on the test subset...", flush=True)
+    reference = StoragePlanningOracle(
+        feeder,
+        replace(planning, max_storage_sites=0),
+        config.costs,
+        config.data,
+        data_center,
+    ).solve(test_subset.scenarios, allow_carbon_slack=True)
+    if reference.status != "optimal" or not reference.feasible:
+        raise RuntimeError(
+            f"The no-storage reference stopped at {reference.status!r}; every "
+            "storage_value would be measured against an unproven number. Raise "
+            "--memory-limit or --planning-time-limit."
+        )
+    no_storage_objective = float(reference.objective)
+    print(
+        f"no-storage reference: {no_storage_objective:,.2f} "
+        f"({reference.solve_time_seconds:.1f}s)\n",
+        flush=True,
+    )
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -233,6 +267,11 @@ def main() -> None:
                     "duration_h": round(energy / power, 3) if power > 0 else 0.0,
                     "at_bound": _at_bound(power, energy, planning),
                     "out_of_sample_objective": round(float(out_of_sample.objective), 2),
+                    "no_storage_objective": round(no_storage_objective, 2),
+                    # Positive means storage paid for itself by this much.
+                    "storage_value": round(
+                        no_storage_objective - float(out_of_sample.objective), 2
+                    ),
                     "out_of_sample_carbon_slack": round(
                         float(out_of_sample.carbon_slack_cost), 2
                     ),
@@ -248,7 +287,8 @@ def main() -> None:
                     f"{row['installed']:<8} {row['power_mw']:.3f} MW "
                     f"{row['energy_mwh']:.3f} MWh {row['duration_h']:.2f} h "
                     f"[{row['at_bound']}] | out-of-sample "
-                    f"{row['out_of_sample_objective']:,.0f}"
+                    f"{row['out_of_sample_objective']:,.0f} | storage value "
+                    f"{row['storage_value']:,.0f}"
                     # The planning status is printed above; without this the
                     # out-of-sample one was visible only in the CSV, and a row
                     # that stopped on memlimit read exactly like a converged one.
@@ -281,6 +321,27 @@ def main() -> None:
     best = min(rows, key=lambda r: r["out_of_sample_objective"])
     print(f"lowest out-of-sample cost: {best['rule']} K={best['k']} "
           f"-> {best['out_of_sample_objective']:,.2f}")
+    # The same spread against both denominators. The first is what the objective
+    # reports, the second is what the decision is worth, and the gap between the
+    # two percentages is the reason the rules looked indistinguishable.
+    values = [r["storage_value"] for r in rows]
+    objectives = [r["out_of_sample_objective"] for r in rows]
+    spread = max(objectives) - min(objectives)
+    mean_objective = sum(objectives) / len(objectives)
+    print(f"\nno-storage reference {no_storage_objective:,.2f}")
+    print(f"storage value: best {max(values):,.0f}, worst {min(values):,.0f}")
+    print(
+        f"spread between rules {spread:,.0f} = "
+        f"{spread / mean_objective * 100:.3f}% of total cost"
+    )
+    if max(values) > 0:
+        print(f"{' ':21s}= {spread / max(values) * 100:.1f}% of what storage is worth")
+    else:
+        print(
+            "storage never paid for itself on this test set: every design cost "
+            "more than installing nothing, so the rules differ only in how much "
+            "they overbuilt."
+        )
     stalled = sorted(
         {(r["rule"], r["k"]) for r in rows
          if r["planning_gap"] > config.planning.solver_relative_gap}
