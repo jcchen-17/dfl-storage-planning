@@ -517,8 +517,19 @@ def evaluate_stage(
     *,
     method_override: str | None = None,
     generator_override: str | None = None,
+    memory_limit_mb: float | None = None,
 ) -> dict:
     config = _apply_generator_override(load_config(config_path), generator_override)
+    if memory_limit_mb is not None:
+        # solver_memory_limit_mb is sized for solver_max_parallel_workers solves
+        # running at once during training. Evaluation solves one model at a time
+        # over final_validation_size scenarios, which is the larger model and the
+        # smaller budget -- at 32 scenarios every solve here stopped on memlimit
+        # while training was fine. The serial path can safely be given what the
+        # whole concurrent set gets.
+        config = replace(
+            config, planning=replace(config.planning, solver_memory_limit_mb=memory_limit_mb)
+        )
     if method_override is not None:
         if method_override not in {"reinforce", "scenario_bo"}:
             raise ValueError("method_override must be 'reinforce' or 'scenario_bo'.")

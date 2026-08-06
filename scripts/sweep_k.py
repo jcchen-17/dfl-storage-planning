@@ -124,6 +124,18 @@ def main() -> None:
             "objectives are then not comparable."
         ),
     )
+    parser.add_argument(
+        "--memory-limit",
+        type=float,
+        default=None,
+        help=(
+            "MB per solve, overriding solver_memory_limit_mb. That value is sized "
+            "for solver_max_parallel_workers solves at once during training; this "
+            "sweep runs one at a time over the larger final_validation_size "
+            "scenario set. At 32 scenarios every out-of-sample solve stopped on "
+            "memlimit, which makes the objectives incomparable."
+        ),
+    )
     parser.add_argument("--output-dir", default="outputs/k_sweep")
     args = parser.parse_args()
 
@@ -133,6 +145,8 @@ def main() -> None:
         planning = replace(
             planning, solver_time_limit_seconds=args.planning_time_limit
         )
+    if args.memory_limit is not None:
+        planning = replace(planning, solver_memory_limit_mb=args.memory_limit)
     data_center = config.data_center
     if args.original_scale:
         data_center = DataCenterConfig(0.03, 0.12, 0.30)
@@ -234,7 +248,15 @@ def main() -> None:
                     f"{row['installed']:<8} {row['power_mw']:.3f} MW "
                     f"{row['energy_mwh']:.3f} MWh {row['duration_h']:.2f} h "
                     f"[{row['at_bound']}] | out-of-sample "
-                    f"{row['out_of_sample_objective']:,.0f}",
+                    f"{row['out_of_sample_objective']:,.0f}"
+                    # The planning status is printed above; without this the
+                    # out-of-sample one was visible only in the CSV, and a row
+                    # that stopped on memlimit read exactly like a converged one.
+                    + (
+                        ""
+                        if row["out_of_sample_status"] == "optimal"
+                        else f"  <-- {row['out_of_sample_status'].upper()}, NOT CONVERGED"
+                    ),
                     flush=True,
                 )
 
@@ -242,6 +264,20 @@ def main() -> None:
         print("no results")
         return
     print()
+    # out_of_sample_objective is the number the whole sweep exists to produce, so
+    # its solve status is checked before any of it is reported as a ranking.
+    unconverged = [r for r in rows if r["out_of_sample_status"] != "optimal"]
+    if unconverged:
+        statuses = sorted({r["out_of_sample_status"] for r in unconverged})
+        print(
+            f"WARNING: {len(unconverged)} of {len(rows)} out-of-sample solves stopped "
+            f"at {statuses} instead of proving optimality. Their objectives are "
+            "unproven incumbents, so the differences between them measure how far "
+            "each solve got, not how good each design is. Re-run with a larger "
+            "--memory-limit (these solves are serial, so they can have far more "
+            "than solver_memory_limit_mb allows the concurrent training solves) "
+            "before reading anything below as a ranking."
+        )
     best = min(rows, key=lambda r: r["out_of_sample_objective"])
     print(f"lowest out-of-sample cost: {best['rule']} K={best['k']} "
           f"-> {best['out_of_sample_objective']:,.2f}")
