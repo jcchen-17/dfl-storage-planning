@@ -95,7 +95,7 @@ dfl:
   # curve came out monotonically decreasing, at 16 it turned into a U with an
   # interior minimum, and a ranking that reverses when the evaluation set grows
   # is not yet a ranking. Raise until it stops moving.
-  final_validation_size: 48
+  final_validation_size: 32
   # Adam's step size is the per-epoch displacement of the policy mean, so this
   # times `epochs` bounds how far the mean can travel in a whole run. At 0.01 the
   # bound is 0.15 and realised travel is nearer 0.036, against a latent
