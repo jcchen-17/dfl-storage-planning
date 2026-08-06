@@ -4,6 +4,7 @@ import json
 import csv
 import time
 from dataclasses import asdict, dataclass, replace
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -72,10 +73,50 @@ class ArtifactPaths:
         return self.root / "tensorboard"
 
 
+def _json_safe(value: Any, path: str, offenders: list[str]) -> Any:
+    """Replace non-finite floats with null, recording where they were.
+
+    ``allow_nan=False`` is deliberate -- the artifacts are read by tools that
+    reject NaN and Infinity -- but it made the write the most expensive possible
+    place to fail: a single unbounded field, typically ``relative_gap`` from a
+    solve that kept an incumbent without proving a bound, discarded a whole run's
+    results after every solve had already been paid for.  Null says "not
+    available" without inventing a number, and the caller reports what was lost.
+    """
+
+    if isinstance(value, float):
+        if not isfinite(value):
+            offenders.append(path or "<root>")
+            return None
+        return value
+    if isinstance(value, dict):
+        return {
+            key: _json_safe(item, f"{path}.{key}" if path else str(key), offenders)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _json_safe(item, f"{path}[{index}]", offenders)
+            for index, item in enumerate(value)
+        ]
+    return value
+
+
 def _write_json(path: Path, payload: object) -> None:
+    offenders: list[str] = []
+    sanitized = _json_safe(payload, "", offenders)
+    if offenders:
+        print(
+            f"WARNING: {path.name} contains {len(offenders)} non-finite value(s), "
+            f"written as null: {', '.join(offenders)}. A non-finite relative_gap "
+            "means the solve stopped without proving a bound -- check the status "
+            "field, and if it is 'memlimit' raise solver_memory_limit_mb or "
+            "shrink the scenario set.",
+            flush=True,
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as stream:
-        json.dump(payload, stream, indent=2, ensure_ascii=False, allow_nan=False)
+        json.dump(sanitized, stream, indent=2, ensure_ascii=False, allow_nan=False)
 
 
 def _read_json(path: Path) -> Any:
