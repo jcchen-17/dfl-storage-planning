@@ -112,14 +112,27 @@ def main() -> None:
         action="store_true",
         help="Use the pre-scale-up facility and storage bounds.",
     )
-    parser.add_argument("--planning-time-limit", type=float, default=600.0)
+    parser.add_argument(
+        "--planning-time-limit",
+        type=float,
+        default=None,
+        help=(
+            "Seconds per solve; the config's solver_time_limit_seconds is used "
+            "otherwise. These rows are the baseline a DFL result at the same K "
+            "has to beat, so a shorter budget here is not a saving: it makes the "
+            "baseline stop on the time limit while DFL converged, and the two "
+            "objectives are then not comparable."
+        ),
+    )
     parser.add_argument("--output-dir", default="outputs/k_sweep")
     args = parser.parse_args()
 
     config = load_config(args.config)
-    planning = replace(
-        config.planning, solver_time_limit_seconds=args.planning_time_limit
-    )
+    planning = config.planning
+    if args.planning_time_limit is not None:
+        planning = replace(
+            planning, solver_time_limit_seconds=args.planning_time_limit
+        )
     data_center = config.data_center
     if args.original_scale:
         data_center = DataCenterConfig(0.03, 0.12, 0.30)

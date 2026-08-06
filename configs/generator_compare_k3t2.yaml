@@ -72,10 +72,11 @@ dfl:
   # conditioning contexts are farthest-point anchors over
   # [day-of-year, weekend, temperature, price regime], so they spread across the
   # year on their own. At K=3 that spread was summer plus two winter days, with
-  # spring and autumn uncovered; K=5 is the first count that reaches all four
+  # spring and autumn uncovered; K=5 was the first count reaching all four
   # seasons. Nothing here encodes an extreme or emergency day: the context has no
   # such dimension, and decision-relevant extremes enter through the validation
-  # set instead (ScenarioCodec.support_indices).
+  # set instead (ScenarioCodec.support_indices). The planning model grows
+  # linearly in K, so this is also the main lever on solve time.
   num_support_scenarios: 8
   epochs: 20
   validation_batch_size: 6
@@ -96,13 +97,12 @@ dfl:
   diversity_margin: 0.80
   diversity_weight: 0.05
   weight_entropy_weight: 0.005
-  # Search width of one epoch. Raised with K: the policy now perturbs a
-  # K x latent_dim = 320-dimensional point, and four probes of that space are
-  # close to a random line search. It also halves the chance of an epoch where
-  # every sample yields the same design, which zeroes the decision gradient
-  # outright. Keep it a multiple of solver_max_parallel_workers, or the last
-  # wave of solves runs part-empty; 6 would cost two waves and fill one and a
-  # half. Two full waves at four workers.
+  # Search width of one epoch. The policy perturbs a K x latent_dim = 512-
+  # dimensional point, so a handful of probes is close to a random line search;
+  # eight also keeps the chance low of an epoch where every sample yields the
+  # same design, which zeroes the decision gradient outright. Keep it a multiple
+  # of solver_max_parallel_workers, or the last wave of solves runs part-empty.
+  # Equal to the workers here, so one full wave.
   policy_samples_per_epoch: 8
   latent_prior_weight: 0.001
   candidate_pool_size: 12
@@ -165,23 +165,30 @@ planning:
   # bilinear equalities used by the exact verification model.
   carbon_formulation: mccormick
   flow_limit_formulation: polygon
-  # Raised with K=9 and the tighter gap. A solve that stops on the time limit
-  # never reaches solver_relative_gap, which puts the ranking back inside solver
-  # noise and defeats the point of tightening it. K=9 is 1.8x the K=5 model
-  # (589k variables against 327k) and the gap is 10x tighter, so the 115 s a
-  # K=5 solve took has room to grow well past the old 900 s before binding.
+  # A solve that stops on the time limit never reaches solver_relative_gap,
+  # which puts the ranking back inside solver noise and defeats the point of
+  # tightening the gap at all. Headroom rather than a target: the model grows
+  # linearly in K (589k variables at K=9 against 327k at K=5) and a planning
+  # solve was measured at 291 s, so this binds only if something goes wrong.
   solver_time_limit_seconds: 1800
   # Which solver builds and solves the planning problem: scip | gurobi.
   # The production formulation is a pure MILP, where the gap between solvers is
   # widest. Gurobi needs gurobipy plus a license large enough for this model.
   solver_backend: gurobi
-  # Tightened 10x after a 15-epoch run whose validation objective varied by only
-  # 1,154 across every design it tried, against a 0.005 gap that leaves 7,650 of
-  # the same objective unresolved. The samples were being ranked six times inside
-  # the solver's own tolerance, so the ordering carried solver noise rather than
-  # scenario quality, and the policy's travel came out at 0.97x a pure random
-  # walk. Affordable: a planning solve was taking 115 s of the 900 s budget.
+  # Sized against the differences actually being ranked. At 0.005 the tolerance
+  # left 7,650 of the objective unresolved while a whole 15-epoch run varied by
+  # 1,154: the ordering carried solver noise, and the policy travelled at 0.97x
+  # a pure random walk. 0.0005 resolved that but overshot. The signal is 13,040
+  # (0.845%) between installing storage and not, and 4,490 (0.29%) among the
+  # designs that do install; 0.001 leaves a floor of 1,530, which is 8.5x and
+  # 2.9x those. Precision below that is unused and expensive -- a solve reaches
+  # 0.20% at 90 s and then spends ~200 s in the root cut loop to reach 0.05%.
   solver_relative_gap: 0.001
+  # Two, not four. The solve never branches -- the log shows it still on node 0
+  # at 141 s -- so the branch-and-bound tree that extra threads would search does
+  # not exist here. The root LP dominates, and Gurobi's concurrent optimizer
+  # splits the budget across primal simplex, dual simplex and barrier, handing
+  # barrier only 2 of 4 anyway. Threads are worth more as concurrent solves.
   solver_threads: 2
   # Search strategy. These reorder SCIP's search without changing the model, so
   # a solution found this way is exactly as valid; only the effort spent proving
@@ -190,13 +197,22 @@ planning:
   solver_emphasis: feasibility
   solver_aggressive_heuristics: true
   # Samples within one DFL epoch are independent and each already solves in its
-  # own process, so this is the main lever on wall-clock time. Keep it at or
-  # below the physical core count.
+  # own process, so this is the main lever on wall-clock time. Matched to
+  # policy_samples_per_epoch so an epoch's planning solves fit one wave instead
+  # of two; at solver_threads 2 that is 16 threads, the machine's physical core
+  # count.
   solver_max_parallel_workers: 8
   # Per-solve budget. Concurrency multiplies it, so keep
   # workers x memory below usable RAM. Exceeding it yields a 'memorylimit'
   # status with the incumbent kept, rather than an aborted process.
+  # 8 x 3500 = 28 GB of a 32 GB machine. Estimated, not measured: the solver log
+  # puts the barrier factor alone at 600 MB and the rest was never profiled. If
+  # 'memlimit' appears in a run, halve the workers and double this rather than
+  # raising it alone.
   solver_memory_limit_mb: 3500
+  # Note this shows nothing during a DFL run: planning solves happen in isolated
+  # workers whose stdout _run_worker captures and discards unless they fail. Use
+  # scripts/solver_log_probe.py to see a solver log; it stays in-process.
   verbose_solver: true
   # Budget for the no-storage bootstrap that seeds each solve; 0 selects
   # max(60 s, 30% of solver_time_limit_seconds) = 90 s here. The bootstrap is
