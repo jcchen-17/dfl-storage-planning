@@ -79,8 +79,23 @@ dfl:
   # linearly in K, so this is also the main lever on solve time.
   num_support_scenarios: 8
   epochs: 50
-  validation_batch_size: 32
-  final_validation_size: 16
+  # These two are priced very differently and should not move together.
+  # validation_batch_size is solved once per sample, so 8 x 50 = 400 times, and
+  # those solves run concurrently across solver_max_parallel_workers. The model
+  # is linear in the scenario count -- 397k variables at 6, 1.06M at 16, 2.12M
+  # at 32 -- so at 32 there would be eight 2.12M-variable models in flight
+  # against a 3500 MB per-solve budget, and the barrier factor alone was 600 MB
+  # at 589k. Every validation solve would stop on memlimit, which is worse than
+  # the sampling noise it was raised to fix: the decision loss would then rank
+  # incumbents nobody proved anything about.
+  validation_batch_size: 16
+  # final_validation_size is the reported number and runs serially, two or three
+  # times a whole run, so one large model is affordable where eight are not.
+  # Worth enlarging on its own evidence: at 6 scenarios the cost-versus-size
+  # curve came out monotonically decreasing, at 16 it turned into a U with an
+  # interior minimum, and a ranking that reverses when the evaluation set grows
+  # is not yet a ranking. Raise until it stops moving.
+  final_validation_size: 48
   # Adam's step size is the per-epoch displacement of the policy mean, so this
   # times `epochs` bounds how far the mean can travel in a whole run. At 0.01 the
   # bound is 0.15 and realised travel is nearer 0.036, against a latent
