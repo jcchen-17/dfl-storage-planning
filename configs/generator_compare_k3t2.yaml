@@ -114,7 +114,10 @@ dfl:
   bo_exploration: 1.5
   bo_weight_floor: 0.02
   bo_finalists: 2
-  decision_deadband_relative: 0.005
+  # Must track solver_relative_gap: a deadband wider than the differences being
+  # ranked discards the whole signal. At 0.005 it spanned 7,650 while the run's
+  # entire spread was 1,154.
+  decision_deadband_relative: 0.0005
   device: auto
 
 data_center:
@@ -162,12 +165,23 @@ planning:
   # bilinear equalities used by the exact verification model.
   carbon_formulation: mccormick
   flow_limit_formulation: polygon
-  solver_time_limit_seconds: 900
+  # Raised with K=9 and the tighter gap. A solve that stops on the time limit
+  # never reaches solver_relative_gap, which puts the ranking back inside solver
+  # noise and defeats the point of tightening it. K=9 is 1.8x the K=5 model
+  # (589k variables against 327k) and the gap is 10x tighter, so the 115 s a
+  # K=5 solve took has room to grow well past the old 900 s before binding.
+  solver_time_limit_seconds: 1800
   # Which solver builds and solves the planning problem: scip | gurobi.
   # The production formulation is a pure MILP, where the gap between solvers is
   # widest. Gurobi needs gurobipy plus a license large enough for this model.
   solver_backend: gurobi
-  solver_relative_gap: 0.005
+  # Tightened 10x after a 15-epoch run whose validation objective varied by only
+  # 1,154 across every design it tried, against a 0.005 gap that leaves 7,650 of
+  # the same objective unresolved. The samples were being ranked six times inside
+  # the solver's own tolerance, so the ordering carried solver noise rather than
+  # scenario quality, and the policy's travel came out at 0.97x a pure random
+  # walk. Affordable: a planning solve was taking 115 s of the 900 s budget.
+  solver_relative_gap: 0.0005
   solver_threads: 4
   # Search strategy. These reorder SCIP's search without changing the model, so
   # a solution found this way is exactly as valid; only the effort spent proving
