@@ -76,7 +76,7 @@ dfl:
   # seasons. Nothing here encodes an extreme or emergency day: the context has no
   # such dimension, and decision-relevant extremes enter through the validation
   # set instead (ScenarioCodec.support_indices).
-  num_support_scenarios: 9
+  num_support_scenarios: 8
   epochs: 20
   validation_batch_size: 6
   final_validation_size: 6
@@ -181,8 +181,8 @@ planning:
   # the solver's own tolerance, so the ordering carried solver noise rather than
   # scenario quality, and the policy's travel came out at 0.97x a pure random
   # walk. Affordable: a planning solve was taking 115 s of the 900 s budget.
-  solver_relative_gap: 0.0005
-  solver_threads: 4
+  solver_relative_gap: 0.001
+  solver_threads: 2
   # Search strategy. These reorder SCIP's search without changing the model, so
   # a solution found this way is exactly as valid; only the effort spent proving
   # optimality shifts. Decision-focused training ranks samples by their incumbent
@@ -192,12 +192,12 @@ planning:
   # Samples within one DFL epoch are independent and each already solves in its
   # own process, so this is the main lever on wall-clock time. Keep it at or
   # below the physical core count.
-  solver_max_parallel_workers: 4
+  solver_max_parallel_workers: 8
   # Per-solve budget. Concurrency multiplies it, so keep
   # workers x memory below usable RAM. Exceeding it yields a 'memorylimit'
   # status with the incumbent kept, rather than an aborted process.
-  solver_memory_limit_mb: 6000
-  verbose_solver: false
+  solver_memory_limit_mb: 3500
+  verbose_solver: true
   # Budget for the no-storage bootstrap that seeds each solve; 0 selects
   # max(60 s, 30% of solver_time_limit_seconds) = 90 s here. The bootstrap is
   # cached per scenario set, so the fixed validation set pays it once for the
