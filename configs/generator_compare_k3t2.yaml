@@ -78,9 +78,9 @@ dfl:
   # set instead (ScenarioCodec.support_indices). The planning model grows
   # linearly in K, so this is also the main lever on solve time.
   num_support_scenarios: 8
-  epochs: 20
-  validation_batch_size: 6
-  final_validation_size: 6
+  epochs: 50
+  validation_batch_size: 32
+  final_validation_size: 16
   # Adam's step size is the per-epoch displacement of the policy mean, so this
   # times `epochs` bounds how far the mean can travel in a whole run. At 0.01 the
   # bound is 0.15 and realised travel is nearer 0.036, against a latent
@@ -89,11 +89,11 @@ dfl:
   # fixes that, since travel grows only as sqrt(epochs). Raising the step is the
   # cheap lever. Not raised further: past ~0.05 the random component of the
   # score-function estimator grows faster than the signal.
-  learning_rate: 0.03
+  learning_rate: 0.01
   baseline_momentum: 0.75
   initial_exploration_std: 0.80
   minimum_exploration_std: 0.15
-  exploration_decay: 0.88
+  exploration_decay: 0.92
   diversity_margin: 0.80
   diversity_weight: 0.05
   weight_entropy_weight: 0.005
