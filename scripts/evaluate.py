@@ -30,6 +30,17 @@ def main() -> None:
             "comparable with a converged one."
         ),
     )
+    parser.add_argument(
+        "--scenarios",
+        type=int,
+        default=None,
+        help=(
+            "Test scenarios to evaluate on, overriding final_validation_size. "
+            "That value is also used by the end-of-training finalist comparison, "
+            "which runs under the training memory budget, so it often has to stay "
+            "small; this reported number does not."
+        ),
+    )
     args = parser.parse_args()
     print(f"Starting evaluation with {args.config}...", flush=True)
     result = evaluate_stage(
@@ -37,6 +48,7 @@ def main() -> None:
         method_override=args.method,
         generator_override=args.generator,
         memory_limit_mb=args.memory_limit,
+        scenarios=args.scenarios,
     )
     print(f"generator: {result['generator']}")
     print(f"method: {result['method']}")

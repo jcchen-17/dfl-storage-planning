@@ -518,8 +518,18 @@ def evaluate_stage(
     method_override: str | None = None,
     generator_override: str | None = None,
     memory_limit_mb: float | None = None,
+    scenarios: int | None = None,
 ) -> dict:
     config = _apply_generator_override(load_config(config_path), generator_override)
+    if scenarios is not None:
+        # final_validation_size is read here and by the end-of-training finalist
+        # comparison, which runs under the training memory budget. Overriding it
+        # only for evaluation lets the config keep a size that is safe there
+        # while the reported number is measured on as many scenarios as the
+        # serial solve can afford.
+        config = replace(
+            config, dfl=replace(config.dfl, final_validation_size=scenarios)
+        )
     if memory_limit_mb is not None:
         # solver_memory_limit_mb is sized for solver_max_parallel_workers solves
         # running at once during training. Evaluation solves one model at a time

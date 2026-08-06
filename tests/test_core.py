@@ -510,6 +510,81 @@ def test_reinforce_epoch_batches_its_validations_and_keeps_them_aligned() -> Non
     assert result.planning_result.feasible
 
 
+def test_finalist_validation_warns_when_it_did_not_converge(capsys) -> None:
+    """The design a run reports is picked by two solves over
+    final_validation_size scenarios, run under the training memory budget. A
+    solve that stops on memlimit still reports a finite objective and passes
+    `feasible`, so without a warning the finalist is chosen by comparing two
+    incumbents nobody bounded, and the run looks entirely normal."""
+
+    feeder = ieee13_unbalanced_microgrid()
+    pool = make_toy_scenarios(feeder, num_scenarios=8, horizon=6, seed=41)
+    codec = ScenarioCodec.fit(pool, feeder)
+    cvae = ConditionalVAE(
+        trajectory_dim=codec.trajectory_dim,
+        context_dim=codec.context_dim,
+        latent_dim=4,
+        hidden_dim=16,
+    )
+    buses = feeder.storage_candidates
+
+    class StalledFinalistOracle:
+        def solve(self, scenarios, *, weights=None, fixed_design=None, **kwargs):
+            scenario_tuple = tuple(scenarios)
+            design = fixed_design or StorageDesign(
+                site={bus: int(bus == "680") for bus in buses},
+                power_mw={bus: (0.5 if bus == "680" else 0.0) for bus in buses},
+                energy_mwh={bus: (2.0 if bus == "680" else 0.0) for bus in buses},
+            )
+            # Only the fixed-design solves stall, which is the real pattern: the
+            # planning solves are smaller and converge.
+            status = "memlimit" if fixed_design is not None else "optimal"
+            return PlanningResult(
+                status=status,
+                objective=100.0,
+                investment_cost=0.0,
+                operating_cost=100.0,
+                carbon_slack_cost=0.0,
+                peak_grid_mw=1.0,
+                design=design,
+                scenario_names=tuple(s.name for s in scenario_tuple),
+                solve_time_seconds=0.01,
+                relative_gap=0.0,
+            )
+
+        def solve_many(self, jobs, *, allow_carbon_slack=False, use_cache=False):
+            return [
+                self.solve(job.scenarios, weights=job.weights, fixed_design=job.fixed_design)
+                for job in jobs
+            ]
+
+    config = DFLConfig(
+        num_support_scenarios=2,
+        epochs=1,
+        validation_batch_size=2,
+        final_validation_size=4,
+        learning_rate=0.01,
+        baseline_momentum=0.75,
+        initial_exploration_std=0.2,
+        minimum_exploration_std=0.1,
+        exploration_decay=0.9,
+        diversity_margin=0.8,
+        diversity_weight=0.05,
+        weight_entropy_weight=0.005,
+        device="cpu",
+        method="reinforce",
+        policy_samples_per_epoch=2,
+    )
+    policy = DirectSupportPolicy(support_count=2, latent_dim=4, seed=11)
+    train_direct_generator(
+        policy, cvae, codec, pool, StalledFinalistOracle(), config, seed=13
+    )
+
+    printed = capsys.readouterr().out
+    assert "finalist validation stopped at 'memlimit'" in printed
+    assert "unproven incumbents" in printed
+
+
 def test_solve_many_batches_fixed_designs_without_repeating_the_bootstrap() -> None:
     config = load_config(Path(__file__).resolve().parents[1] / "configs" / "smoke.yaml")
     feeder = ieee13_unbalanced_microgrid()

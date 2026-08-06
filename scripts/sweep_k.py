@@ -145,6 +145,16 @@ def main() -> None:
             "memlimit, which makes the objectives incomparable."
         ),
     )
+    parser.add_argument(
+        "--scenarios",
+        type=int,
+        default=None,
+        help=(
+            "Test scenarios per row, overriding final_validation_size. Must match "
+            "what evaluate.py was given, or the DFL result and these baselines are "
+            "measured on different sets and cannot be compared."
+        ),
+    )
     parser.add_argument("--output-dir", default="outputs/k_sweep")
     args = parser.parse_args()
 
@@ -172,11 +182,13 @@ def main() -> None:
     feeder, validation_pool = _experiment_data(config, config.data.validation_split)
     _, test_pool = _experiment_data(config, config.data.test_split)
     codec = _load_codec(paths, feeder)
+    evaluation_scenarios = (
+        args.scenarios if args.scenarios is not None else config.dfl.final_validation_size
+    )
     test_subset = ScenarioPool(
         test_pool.subset(
             codec.support_indices(
-                test_pool,
-                min(config.dfl.final_validation_size, len(test_pool.scenarios)),
+                test_pool, min(evaluation_scenarios, len(test_pool.scenarios))
             ).tolist()
         )
     )

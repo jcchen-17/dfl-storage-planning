@@ -462,6 +462,26 @@ def train_direct_generator(
         best_full_validation = None
         best_full_loss = float("inf")
 
+    # This comparison picks the design the whole run reports, and it is the one
+    # place where final_validation_size scenarios are solved under the training
+    # memory budget -- the larger model against a budget sized for
+    # solver_max_parallel_workers concurrent solves. A solve that stops on
+    # memlimit still passes `feasible`, so without this the finalist would be
+    # chosen by comparing two incumbents nobody bounded, silently.
+    for label, result in (
+        ("deterministic", deterministic_validation),
+        ("best-epoch", best_full_validation),
+    ):
+        if result is not None and result.status != "optimal":
+            print(
+                f"WARNING: the {label} finalist validation stopped at "
+                f"{result.status!r} over {len(final_validation_scenarios)} "
+                "scenarios, so the design this run reports was chosen by comparing "
+                "unproven incumbents. Set final_validation_size equal to "
+                "validation_batch_size for training and use evaluate.py's "
+                "--scenarios and --memory-limit for the large evaluation instead.",
+                flush=True,
+            )
     if best_plan is None or deterministic_loss <= best_full_loss:
         chosen_scenarios = deterministic_scenarios
         chosen_weights = deterministic_weights
