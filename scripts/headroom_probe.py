@@ -132,6 +132,12 @@ def main() -> None:
     # Sweep this against the default before trusting any ranking.
     ap.add_argument("--relative-gap", type=float, default=None,
                     help="override planning.solver_relative_gap")
+    # The ceiling is the one number that says whether the rule values are near
+    # the achievable maximum or nowhere close, and it is the expensive one. Once
+    # the rules have been measured there is no reason to pay for them again just
+    # to get it.
+    ap.add_argument("--ceiling-only", action="store_true",
+                    help="solve for the ceiling and skip the selection rules")
     args = ap.parse_args()
 
     tag = args.tag or (args.regime or "all").replace("price_", "")
@@ -206,8 +212,10 @@ def main() -> None:
               f"  ({time.perf_counter() - started:.0f}s)", flush=True)
 
     rows = []
-    jobs = [("random", s) for s in range(args.seeds)]
-    jobs += [("kmeans", 0), ("farthest", 0), ("aggregate", 0)]
+    jobs: list[tuple[str, int]] = []
+    if not args.ceiling_only:
+        jobs = [("random", s) for s in range(args.seeds)]
+        jobs += [("kmeans", 0), ("farthest", 0), ("aggregate", 0)]
     for rule, seed in jobs:
         scenarios, weights, labels = select_scenarios(rule, val, codec, args.k, seed=seed)
         design = oracle.solve(scenarios, weights=weights)
