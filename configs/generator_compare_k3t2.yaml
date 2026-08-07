@@ -4,7 +4,7 @@
 # backup generator, storage bounds and carbon constraints unchanged. T2 only
 # tests a plausible low-cost BESS / high-demand-charge commercial case; storage
 # remains optional and is never forced into the solution.
-seed: 7
+seed: 0
 
 data:
   dataset_path: data/processed/ieee13_smartds_dfl/dfl_training_windows_48h_price_regimes.npz
@@ -77,8 +77,8 @@ dfl:
   # such dimension, and decision-relevant extremes enter through the validation
   # set instead (ScenarioCodec.support_indices). The planning model grows
   # linearly in K, so this is also the main lever on solve time.
-  num_support_scenarios: 8
-  epochs: 50
+  num_support_scenarios: 3
+  epochs: 20
   # These two are priced very differently and should not move together.
   # validation_batch_size is solved once per sample, so 8 x 50 = 400 times, and
   # those solves run concurrently across solver_max_parallel_workers. The model

@@ -1,4 +1,10 @@
-﻿seed: 7
+# K=3, T2 storage-economics sensitivity.
+#
+# This keeps the K3T1 network, three-times data-center load, existing 2 MW
+# backup generator, storage bounds and carbon constraints unchanged. T2 only
+# tests a plausible low-cost BESS / high-demand-charge commercial case; storage
+# remains optional and is never forced into the solution.
+seed: 0
 
 data:
   dataset_path: data/processed/ieee13_smartds_dfl/dfl_training_windows_48h_price_regimes.npz
@@ -66,15 +72,39 @@ dfl:
   # conditioning contexts are farthest-point anchors over
   # [day-of-year, weekend, temperature, price regime], so they spread across the
   # year on their own. At K=3 that spread was summer plus two winter days, with
-  # spring and autumn uncovered; K=5 is the first count that reaches all four
+  # spring and autumn uncovered; K=5 was the first count reaching all four
   # seasons. Nothing here encodes an extreme or emergency day: the context has no
   # such dimension, and decision-relevant extremes enter through the validation
-  # set instead (ScenarioCodec.support_indices).
-  num_support_scenarios: 5
-  epochs: 15
-  validation_batch_size: 6
-  final_validation_size: 6
-  learning_rate: 0.01
+  # set instead (ScenarioCodec.support_indices). The planning model grows
+  # linearly in K, so this is also the main lever on solve time.
+  num_support_scenarios: 8
+  epochs: 20
+  # These two are priced very differently and should not move together.
+  # validation_batch_size is solved once per sample, so 8 x 50 = 400 times, and
+  # those solves run concurrently across solver_max_parallel_workers. The model
+  # is linear in the scenario count -- 397k variables at 6, 1.06M at 16, 2.12M
+  # at 32 -- so at 32 there would be eight 2.12M-variable models in flight
+  # against a 3500 MB per-solve budget, and the barrier factor alone was 600 MB
+  # at 589k. Every validation solve would stop on memlimit, which is worse than
+  # the sampling noise it was raised to fix: the decision loss would then rank
+  # incumbents nobody proved anything about.
+  validation_batch_size: 16
+  # final_validation_size is the reported number and runs serially, two or three
+  # times a whole run, so one large model is affordable where eight are not.
+  # Worth enlarging on its own evidence: at 6 scenarios the cost-versus-size
+  # curve came out monotonically decreasing, at 16 it turned into a U with an
+  # interior minimum, and a ranking that reverses when the evaluation set grows
+  # is not yet a ranking. Raise until it stops moving.
+  final_validation_size: 16
+  # Adam's step size is the per-epoch displacement of the policy mean, so this
+  # times `epochs` bounds how far the mean can travel in a whole run. At 0.01 the
+  # bound is 0.15 and realised travel is nearer 0.036, against a latent
+  # initialised at scale 0.28 and sampled with exploration_std 0.80 -> 0.15: the
+  # mean never leaves the cloud it is drawing from, and no number of epochs
+  # fixes that, since travel grows only as sqrt(epochs). Raising the step is the
+  # cheap lever. Not raised further: past ~0.05 the random component of the
+  # score-function estimator grows faster than the signal.
+  learning_rate: 0.03
   baseline_momentum: 0.75
   initial_exploration_std: 0.80
   minimum_exploration_std: 0.15
@@ -82,13 +112,12 @@ dfl:
   diversity_margin: 0.80
   diversity_weight: 0.05
   weight_entropy_weight: 0.005
-  # Search width of one epoch. Raised with K: the policy now perturbs a
-  # K x latent_dim = 320-dimensional point, and four probes of that space are
-  # close to a random line search. It also halves the chance of an epoch where
-  # every sample yields the same design, which zeroes the decision gradient
-  # outright. Keep it a multiple of solver_max_parallel_workers, or the last
-  # wave of solves runs part-empty; 6 would cost two waves and fill one and a
-  # half. Two full waves at four workers.
+  # Search width of one epoch. The policy perturbs a K x latent_dim = 512-
+  # dimensional point, so a handful of probes is close to a random line search;
+  # eight also keeps the chance low of an epoch where every sample yields the
+  # same design, which zeroes the decision gradient outright. Keep it a multiple
+  # of solver_max_parallel_workers, or the last wave of solves runs part-empty.
+  # Equal to the workers here, so one full wave.
   policy_samples_per_epoch: 8
   latent_prior_weight: 0.001
   candidate_pool_size: 12
@@ -100,7 +129,10 @@ dfl:
   bo_exploration: 1.5
   bo_weight_floor: 0.02
   bo_finalists: 2
-  decision_deadband_relative: 0.005
+  # Must track solver_relative_gap: a deadband wider than the differences being
+  # ranked discards the whole signal. At 0.005 it spanned 7,650 while the run's
+  # entire spread was 1,154.
+  decision_deadband_relative: 0.0005
   device: auto
 
 data_center:
@@ -148,13 +180,31 @@ planning:
   # bilinear equalities used by the exact verification model.
   carbon_formulation: mccormick
   flow_limit_formulation: polygon
-  solver_time_limit_seconds: 900
+  # A solve that stops on the time limit never reaches solver_relative_gap,
+  # which puts the ranking back inside solver noise and defeats the point of
+  # tightening the gap at all. Headroom rather than a target: the model grows
+  # linearly in K (589k variables at K=9 against 327k at K=5) and a planning
+  # solve was measured at 291 s, so this binds only if something goes wrong.
+  solver_time_limit_seconds: 1800
   # Which solver builds and solves the planning problem: scip | gurobi.
   # The production formulation is a pure MILP, where the gap between solvers is
   # widest. Gurobi needs gurobipy plus a license large enough for this model.
   solver_backend: gurobi
-  solver_relative_gap: 0.005
-  solver_threads: 4
+  # Sized against the differences actually being ranked. At 0.005 the tolerance
+  # left 7,650 of the objective unresolved while a whole 15-epoch run varied by
+  # 1,154: the ordering carried solver noise, and the policy travelled at 0.97x
+  # a pure random walk. 0.0005 resolved that but overshot. The signal is 13,040
+  # (0.845%) between installing storage and not, and 4,490 (0.29%) among the
+  # designs that do install; 0.001 leaves a floor of 1,530, which is 8.5x and
+  # 2.9x those. Precision below that is unused and expensive -- a solve reaches
+  # 0.20% at 90 s and then spends ~200 s in the root cut loop to reach 0.05%.
+  solver_relative_gap: 0.001
+  # Two, not four. The solve never branches -- the log shows it still on node 0
+  # at 141 s -- so the branch-and-bound tree that extra threads would search does
+  # not exist here. The root LP dominates, and Gurobi's concurrent optimizer
+  # splits the budget across primal simplex, dual simplex and barrier, handing
+  # barrier only 2 of 4 anyway. Threads are worth more as concurrent solves.
+  solver_threads: 2
   # Search strategy. These reorder SCIP's search without changing the model, so
   # a solution found this way is exactly as valid; only the effort spent proving
   # optimality shifts. Decision-focused training ranks samples by their incumbent
@@ -162,14 +212,23 @@ planning:
   solver_emphasis: feasibility
   solver_aggressive_heuristics: true
   # Samples within one DFL epoch are independent and each already solves in its
-  # own process, so this is the main lever on wall-clock time. Keep it at or
-  # below the physical core count.
-  solver_max_parallel_workers: 2
+  # own process, so this is the main lever on wall-clock time. Matched to
+  # policy_samples_per_epoch so an epoch's planning solves fit one wave instead
+  # of two; at solver_threads 2 that is 16 threads, the machine's physical core
+  # count.
+  solver_max_parallel_workers: 8
   # Per-solve budget. Concurrency multiplies it, so keep
   # workers x memory below usable RAM. Exceeding it yields a 'memorylimit'
   # status with the incumbent kept, rather than an aborted process.
-  solver_memory_limit_mb: 0
-  verbose_solver: false
+  # 8 x 3500 = 28 GB of a 32 GB machine. Estimated, not measured: the solver log
+  # puts the barrier factor alone at 600 MB and the rest was never profiled. If
+  # 'memlimit' appears in a run, halve the workers and double this rather than
+  # raising it alone.
+  solver_memory_limit_mb: 3500
+  # Note this shows nothing during a DFL run: planning solves happen in isolated
+  # workers whose stdout _run_worker captures and discards unless they fail. Use
+  # scripts/solver_log_probe.py to see a solver log; it stays in-process.
+  verbose_solver: true
   # Budget for the no-storage bootstrap that seeds each solve; 0 selects
   # max(60 s, 30% of solver_time_limit_seconds) = 90 s here. The bootstrap is
   # cached per scenario set, so the fixed validation set pays it once for the
@@ -180,25 +239,24 @@ planning:
 
 
 costs:
-  # Calibrated commercial-microgrid case. These costs remain below a current
-  # turnkey benchmark so storage can still be selected, but they remove the
-  # unrealistically cheap $58/kWh four-hour system used by the strong-storage
-  # sensitivity case.
-  capital_recovery_factor: 0.10
-  site_dollars: 25000.0
-  power_dollars_per_mw: 150000.0
-  energy_dollars_per_mwh: 150000.0
-  degradation_dollars_per_mwh: 8.0
-  demand_dollars_per_mw_year: 150000.0
+  # T2: midpoint storage-economics sensitivity between K3T1 (storage was often
+  # rejected) and the former aggressive T2 values (storage hit both capacity
+  # bounds). For a 4 h system the variable CAPEX is 140 $/kW + 4*135 $/kWh =
+  # 680 $/kW, and its annualized variable cost is 61.2 $/kW-year. Storage stays
+  # optional; neither installation nor a minimum aggregate capacity is imposed.
+  capital_recovery_factor: 0.09
+  site_dollars: 20000.0
+  power_dollars_per_mw: 140000.0
+  energy_dollars_per_mwh: 135000.0
+  degradation_dollars_per_mwh: 7.0
+  demand_dollars_per_mw_year: 160000.0
   generator_dollars_per_mwh: 250.0
   delay_dollars_per_task_hour: 24.0
   curtailment_dollars_per_mwh: 4.0
   shedding_dollars_per_mwh: 10000.0
   validation_carbon_slack_dollars: 300000.0
 
-# Isolated from the calibrated run so retraining the generators cannot overwrite
-# its cvae.pt, normalization.json or DFL checkpoints. Also isolated per cost
-# case: k1t1, k1t2 and k3t1 previously shared one directory, so whichever ran
-# last silently overwrote the others' checkpoints, results and TensorBoard logs.
-output_dir: outputs/generator_comparison_k3t1_48h
+# Keep the T2 checkpoints and evaluation reports separate from K3T1.
+output_dir: outputs/generator_comparison_k3t2_48h
+
 
