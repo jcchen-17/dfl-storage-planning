@@ -277,17 +277,19 @@ planning:
   # 2.9x those. Precision below that is unused and expensive -- a solve reaches
   # 0.20% at 90 s and then spends ~200 s in the root cut loop to reach 0.05%.
   solver_relative_gap: 0.001
-  # Four, measured on this machine (Ryzen 5 5600X, 6 physical / 12 logical) with
-  # Gurobi 13 on the K=1 planning solve, everything else held fixed:
-  #   1 thread 18.37 s | 2 threads 14.06 s | 4 threads 7.27 s | 6 threads 7.43 s
-  # Four is 1.93x two and the curve is flat past it, so four.
-  # The previous value was 2, reasoned as "the solve never branches -- the log
-  # shows it still on node 0 at 141 s -- so the tree extra threads would search
-  # does not exist". That evidence came from a SCIP log and does not survive the
-  # move to Gurobi: at 2 threads Gurobi explores 9 nodes, at 4 it explores 1 and
-  # closes the gap at the root. The extra threads accelerate the root cut loop,
-  # which is precisely the part that dominates -- they are not tree search.
-  solver_threads: 4
+  # Two, measured by scripts/tune_solver.py on the training machine (i7-14650HX,
+  # 16 physical / 24 logical, 32 GB) on the K=1 planning solve:
+  #   2 threads 4.3 s | 4 threads 4.1 s | 8 threads 5.3 s | 16 threads 4.1 s
+  # 2, 4 and 16 are within noise of each other and 8 is worse, which is what a
+  # P-core/E-core split does to a fixed thread count. Two is as fast per solve as
+  # any of them and leaves the rest of the machine for concurrent solves, which
+  # is where the throughput actually is.
+  #
+  # Do not carry this number to another machine. On a 6-core / 12-thread desktop
+  # the same measurement gave 1 thread 18.37 s | 2 threads 14.06 s | 4 threads
+  # 7.27 s | 6 threads 7.43 s, where four is nearly twice two. Run tune_solver.py
+  # instead of assuming.
+  solver_threads: 2
   # Search strategy. These reorder SCIP's search without changing the model, so
   # a solution found this way is exactly as valid; only the effort spent proving
   # optimality shifts. Decision-focused training ranks samples by their incumbent
@@ -296,41 +298,42 @@ planning:
   solver_aggressive_heuristics: true
   # Samples within one DFL epoch are independent and each already solves in its
   # own process, so this is the main lever on wall-clock time.
-  # Three, and memory is what caps it, not cores. The solve DFL runs
+  # Eight, from tune_solver.py on the training machine. The solve that runs
   # concurrently is the fixed-design validation solve over
   # validation_batch_size scenarios; measured peak RSS for one of those is
-  # 2,885 MB (see solver_memory_limit_mb). On this machine's 15.9 GB:
-  #   8 workers -> 22.5 GB  (the previous value: it pages, and that paging is
-  #                          the single largest cost in a run)
-  #   4 workers -> 11.3 GB
-  #   3 workers ->  8.5 GB  <- fits with room for the parent, torch and CUDA
-  # The previous 8 was matched to policy_samples_per_epoch and justified as
-  # "at solver_threads 2 that is 16 threads, the machine's physical core count",
-  # which describes a 16-core / 32 GB machine, not this 6-core / 16 GB one.
-  # At solver_threads 4 this is 12 threads, exactly the logical processor count.
-  # Note 8 policy samples over 3 workers leaves the last wave part-empty; drop
-  # policy_samples_per_epoch to 6 for two full waves if that shows up as idle
-  # time. Paging is far more expensive than a part-empty wave, so this ordering
-  # is deliberate.
-  solver_max_parallel_workers: 3
+  # 955 MB there. Against 18.3 GB free and 24 logical processors:
+  #   memory -> 15 workers (16.3 GB usable at 1,099 MB each with headroom)
+  #   cores  -> 12 workers (24 logical at solver_threads 2)
+  #   waves  ->  8, the largest divisor of policy_samples_per_epoch, so an
+  #              epoch's solves fit whole waves instead of leaving one part-empty
+  # Memory is comfortable here, which it was not before: the same solve peaked
+  # at 2,885 MB under carbon_formulation "mccormick", and moving to
+  # system_average cut the model to a third of the size.
+  #
+  # This is machine-specific and the failure is asymmetric. On a 6-core / 16 GB
+  # desktop the same eight workers wanted 22.5 GB against 5.1 GB free and paged,
+  # which cost more than running a third as many would have. Re-measure rather
+  # than carry it.
+  solver_max_parallel_workers: 8
   # Per-solve budget. Concurrency multiplies it, so keep
   # workers x memory below usable RAM. Exceeding it yields a 'memorylimit'
   # status with the incumbent kept, rather than an aborted process.
-  # Measured on this machine, peak RSS of a single worker process:
-  #   planning,   1 scenario           :   987 MB
-  #   validation, 16 scenarios, fixed  : 2,885 MB  <- the one run concurrently
-  #   planning,   16 scenarios, free   : 4,093 MB  <- overran the old 3,500 and
-  #                                                   returned memlimit ALONE,
-  #                                                   with no other worker running
-  # 3 x 3200 = 9.6 GB of 15.9 GB. The floor is set by the 2,885 MB validation
-  # solve: below roughly 3,000 every one of them returns memlimit, which is how
-  # the three memlimit rows in outputs/k_sweep_k1358_cvae got there.
-  # The previous 3,500 was sized as "8 x 3500 = 28 GB of a 32 GB machine" and
-  # labelled "Estimated, not measured" -- both the estimate and the machine were
-  # wrong for this box. A free-design solve over many scenarios (the K=8 sweep
-  # rows, or the perfect-information solve) needs 5,000+ and should be run at
-  # workers 1 rather than by raising this for everything.
-  solver_memory_limit_mb: 3200
+  # Measured, not estimated. Peak RSS of one worker process on the training
+  # machine under carbon_formulation system_average:
+  #   validation, 16 scenarios, fixed design : 955 MB  <- the concurrent one
+  # 1,000 leaves headroom over that, and 8 x 1,000 = 8 GB against 18.3 GB free.
+  #
+  # The same solve peaked at 2,885 MB under "mccormick", and a free-design solve
+  # over 16 scenarios peaked at 4,093 MB there -- enough to overrun the old 3,500
+  # and return memlimit with no other worker running. Both shrank by roughly a
+  # third when the carbon formulation changed.
+  #
+  # The value this replaced was "8 x 3500 = 28 GB of a 32 GB machine", labelled
+  # "Estimated, not measured". The arithmetic was right for that machine and the
+  # estimate was three times the truth. A free-design solve over many scenarios
+  # (the K=8 sweep rows, or the perfect-information solve) still wants more, and
+  # should be run at workers 1 rather than by raising this for everything.
+  solver_memory_limit_mb: 1000
   # Note this shows nothing during a DFL run: planning solves happen in isolated
   # workers whose stdout _run_worker captures and discards unless they fail. Use
   # scripts/solver_log_probe.py to see a solver log; it stays in-process.
