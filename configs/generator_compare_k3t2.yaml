@@ -107,8 +107,11 @@ dfl:
   learning_rate: 0.03
   baseline_momentum: 0.75
   initial_exploration_std: 0.80
-  minimum_exploration_std: 0.15
-  exploration_decay: 0.92
+  # Keep broad exploration early, then allow a quieter fine-tuning phase. The
+  # previous 0.92 schedule hit its 0.15 floor at epoch 21 and therefore injected
+  # the same visible sampling noise throughout the second half of training.
+  minimum_exploration_std: 0.10
+  exploration_decay: 0.94
   diversity_margin: 0.80
   diversity_weight: 0.05
   weight_entropy_weight: 0.005
@@ -137,6 +140,11 @@ dfl:
   # ordered by the solver and must be ties, otherwise REINFORCE learns numerical
   # noise. The finalist tie-break then prefers the cheaper/smaller design.
   decision_deadband_relative: 0.001
+  # Stop only after the decision loss has failed to improve by more than the
+  # solver-resolution deadband for ten epochs. This is decision convergence,
+  # not the visual flatness of a noisy REINFORCE curve.
+  early_stopping_min_epochs: 25
+  early_stopping_patience: 10
   device: auto
 
 data_center:

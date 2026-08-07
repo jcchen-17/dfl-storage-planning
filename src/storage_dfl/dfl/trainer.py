@@ -245,6 +245,9 @@ def train_direct_generator(
     infeasible_samples = 0
     finalists: dict[tuple, _ReinforceFinalist] = {}
     records: list[EpochRecord] = []
+    stopping_reference = float("inf")
+    epochs_without_material_improvement = 0
+    evaluated_policy_samples = 0
 
     epoch_seconds: list[float] = []
     for epoch in range(config.epochs):
@@ -313,6 +316,7 @@ def train_direct_generator(
                 infeasible_samples += 1
                 infeasible_in_epoch += 1
             candidates.append((sample, generated, weights, plan, validation, decision_loss))
+            evaluated_policy_samples += 1
             print(
                 f"DFL epoch {epoch + 1}/{config.epochs} sample "
                 f"{sample_index + 1}/{max(1, config.policy_samples_per_epoch)}: "
@@ -368,6 +372,23 @@ def train_direct_generator(
 
         epoch_best = candidates[int(np.argmin(decision_losses))]
         sample, generated, weights, plan, validation, decision_loss = epoch_best
+
+        material_improvement = False
+        if decision_loss < INFEASIBLE_LOSS:
+            if not isfinite(stopping_reference):
+                stopping_reference = float(decision_loss)
+                material_improvement = True
+            else:
+                tolerance = config.decision_deadband_relative * max(
+                    abs(stopping_reference), 1.0
+                )
+                if decision_loss < stopping_reference - tolerance:
+                    stopping_reference = float(decision_loss)
+                    material_improvement = True
+        if material_improvement:
+            epochs_without_material_improvement = 0
+        else:
+            epochs_without_material_improvement += 1
 
         for sample, generated, weights, plan, _, decision_loss in candidates:
             if plan.feasible and decision_loss < INFEASIBLE_LOSS:
@@ -456,6 +477,17 @@ def train_direct_generator(
             # stays far below it, the mean has not left the cloud it is sampling
             # from and no amount of further epochs will show a decision effect.
             writer.add_scalar("policy/latent_shift", latent_shift, epoch)
+            if isfinite(stopping_reference):
+                writer.add_scalar(
+                    "convergence/best_material_validation",
+                    stopping_reference,
+                    epoch,
+                )
+            writer.add_scalar(
+                "convergence/epochs_without_material_improvement",
+                epochs_without_material_improvement,
+                epoch,
+            )
             writer.add_scalar("time/epoch_seconds", epoch_wall_seconds, epoch)
             writer.add_scalar("time/planning_seconds", planning_wall_seconds, epoch)
             writer.add_scalar("time/validation_seconds", validation_wall_seconds, epoch)
@@ -466,8 +498,21 @@ def train_direct_generator(
                 writer.add_scalar(f"scenario_weight/support_{index}", weight, epoch)
             writer.flush()
 
-    total_policy_samples = config.epochs * max(1, config.policy_samples_per_epoch)
-    if infeasible_samples == total_policy_samples:
+        if (
+            config.early_stopping_patience > 0
+            and epoch + 1 >= config.early_stopping_min_epochs
+            and epochs_without_material_improvement
+            >= config.early_stopping_patience
+        ):
+            print(
+                f"DFL early stopping after epoch {epoch + 1}: no validation "
+                f"improvement larger than {config.decision_deadband_relative:.4g} "
+                f"relative for {epochs_without_material_improvement} epochs.",
+                flush=True,
+            )
+            break
+
+    if infeasible_samples == evaluated_policy_samples:
         raise RuntimeError(
             f"All {config.epochs} DFL epochs ended without a converged validation "
             "reward, so the policy was never exposed to a trustworthy planning "

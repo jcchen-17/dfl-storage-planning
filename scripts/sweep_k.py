@@ -1,4 +1,4 @@
-"""Sweep the planning scenario count K across several non-learned selection rules.
+"""Sweep K across historical and frozen-generator selection baselines.
 
 The DFL stage learns a support set of size ``dfl.num_support_scenarios``.  That
 count, and the claim that learning the set beats choosing it, both have to be
@@ -35,11 +35,20 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
+import torch
+
 from storage_dfl.config import DataCenterConfig, load_config
 from storage_dfl.data import ScenarioPool
-from storage_dfl.dfl import SELECTION_RULES, select_scenarios
+from storage_dfl.dfl import SELECTION_RULES, resolve_device, select_scenarios
+from storage_dfl.models import GENERATOR_KINDS, ConditionalGenerator
 from storage_dfl.planning import StoragePlanningOracle
-from storage_dfl.stages import ArtifactPaths, _experiment_data, _load_codec
+from storage_dfl.stages import (
+    ArtifactPaths,
+    _experiment_data,
+    _load_codec,
+    load_generator,
+)
 
 COLUMNS = (
     "rule",
@@ -100,6 +109,73 @@ def _write(rows: list[dict], output_dir: Path) -> None:
         writer.writerows(rows)
 
 
+@torch.no_grad()
+def _generator_candidate_pool(
+    model: ConditionalGenerator,
+    codec,
+    observed_pool: ScenarioPool,
+    count: int,
+    seed: int,
+    device: torch.device,
+) -> ScenarioPool:
+    """Draw one frozen CVAE pool shared by random/k-means/farthest.
+
+    Conditions are diverse observed validation contexts, while trajectories are
+    prior samples. Sharing this pool is essential: otherwise a selection rule
+    can win because it received luckier generator draws rather than because its
+    selection criterion was better.
+    """
+
+    if count <= 0:
+        raise ValueError("candidate-pool-size must be positive.")
+    _, all_contexts = codec.encode_pool(observed_pool)
+    anchor_count = min(16, count, len(observed_pool.scenarios))
+    anchor_indices = codec.support_indices(observed_pool, anchor_count)
+    repeats = int(np.ceil(count / anchor_count))
+    contexts = np.tile(all_contexts[anchor_indices], (repeats, 1))[:count]
+    cpu_generator = torch.Generator(device="cpu").manual_seed(seed)
+    latent = model.sample_latent(count, generator=cpu_generator).to(
+        device=device, dtype=torch.float32
+    )
+    conditions = torch.as_tensor(contexts, dtype=torch.float32, device=device)
+    decoded = model.decode(latent, conditions).cpu().numpy()
+    return ScenarioPool(
+        codec.decode_batch(
+            decoded,
+            contexts,
+            name_prefix=f"{model.kind}_pool_s{seed}",
+        )
+    )
+
+
+@torch.no_grad()
+def _generator_initial_support(
+    model: ConditionalGenerator,
+    codec,
+    observed_pool: ScenarioPool,
+    count: int,
+    device: torch.device,
+):
+    """Decode the posterior means that initialise REINFORCE, without training."""
+
+    trajectories, contexts = codec.encode_pool(observed_pool)
+    indices = codec.support_indices(observed_pool, count)
+    x = torch.as_tensor(trajectories[indices], dtype=torch.float32, device=device)
+    c = torch.as_tensor(contexts[indices], dtype=torch.float32, device=device)
+    latent, _ = model.encode(x, c)
+    decoded = model.decode(latent, c).cpu().numpy()
+    scenarios = codec.decode_batch(
+        decoded,
+        contexts[indices],
+        name_prefix=f"{model.kind}_initial_k{count}",
+    )
+    return (
+        scenarios,
+        (1.0 / count,) * count,
+        tuple(f"reconstruction:{observed_pool.scenarios[i].name}" for i in indices),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/generator_compare.yaml")
@@ -107,8 +183,36 @@ def main() -> None:
     parser.add_argument(
         "--rules",
         nargs="+",
-        choices=SELECTION_RULES,
+        choices=(*SELECTION_RULES, "initial"),
         default=["farthest", "kmeans", "aggregate"],
+    )
+    parser.add_argument(
+        "--source",
+        choices=("historical", "cvae"),
+        default="historical",
+        help=(
+            "historical selects from the validation observations; cvae selects "
+            "from one frozen generated candidate pool. Use cvae with the same "
+            "checkpoint as REINFORCE to isolate the value of decision feedback."
+        ),
+    )
+    parser.add_argument(
+        "--generator",
+        choices=GENERATOR_KINDS,
+        default=None,
+        help="Generator checkpoint used when --source cvae (default: config kind).",
+    )
+    parser.add_argument(
+        "--candidate-pool-size",
+        type=int,
+        default=256,
+        help="Frozen generated pool size used by CVAE selection rules.",
+    )
+    parser.add_argument(
+        "--pool-seed",
+        type=int,
+        default=None,
+        help="Seed for the frozen CVAE pool (default: experiment seed).",
     )
     parser.add_argument(
         "--seeds",
@@ -159,6 +263,8 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.source == "historical" and "initial" in args.rules:
+        parser.error("the 'initial' rule is defined only for --source cvae")
     planning = config.planning
     if args.planning_time_limit is not None:
         planning = replace(
@@ -182,6 +288,21 @@ def main() -> None:
     feeder, validation_pool = _experiment_data(config, config.data.validation_split)
     _, test_pool = _experiment_data(config, config.data.test_split)
     codec = _load_codec(paths, feeder)
+    selection_pool = validation_pool
+    generator_model = None
+    generator_device = None
+    generator_kind = args.generator or config.generator.kind
+    if args.source == "cvae":
+        generator_device = resolve_device(config.dfl.device)
+        generator_model = load_generator(paths, generator_kind, generator_device)
+        selection_pool = _generator_candidate_pool(
+            generator_model,
+            codec,
+            validation_pool,
+            args.candidate_pool_size,
+            config.seed if args.pool_seed is None else args.pool_seed,
+            generator_device,
+        )
     evaluation_scenarios = (
         args.scenarios if args.scenarios is not None else config.dfl.final_validation_size
     )
@@ -232,6 +353,12 @@ def main() -> None:
     print(f"cost P/E      : {config.costs.power_dollars_per_mw} / "
           f"{config.costs.energy_dollars_per_mwh}")
     print(f"test set      : {len(test_subset.scenarios)} scenarios")
+    print(f"support source: {args.source}")
+    if args.source == "cvae":
+        print(
+            f"generator pool: {generator_kind}, n={len(selection_pool.scenarios)}, "
+            f"seed={config.seed if args.pool_seed is None else args.pool_seed}"
+        )
     if done:
         print(f"resuming      : {len(done)} pairs already complete")
     print(flush=True)
@@ -240,11 +367,22 @@ def main() -> None:
         seeds = range(args.seeds) if rule == "random" else [0]
         for seed in seeds:
             for k in args.k:
-                if (rule, k, seed) in done:
+                result_rule = f"cvae_{rule}" if args.source == "cvae" else rule
+                if (result_rule, k, seed) in done:
                     continue
-                scenarios, weights, labels = select_scenarios(
-                    rule, validation_pool, codec, k, seed=seed
-                )
+                if rule == "initial":
+                    assert generator_model is not None and generator_device is not None
+                    scenarios, weights, labels = _generator_initial_support(
+                        generator_model,
+                        codec,
+                        validation_pool,
+                        k,
+                        generator_device,
+                    )
+                else:
+                    scenarios, weights, labels = select_scenarios(
+                        rule, selection_pool, codec, k, seed=seed
+                    )
                 started = time.perf_counter()
                 design = oracle.solve(scenarios, weights=weights)
                 planning_seconds = time.perf_counter() - started
@@ -266,7 +404,7 @@ def main() -> None:
                 out_of_sample_seconds = time.perf_counter() - started
 
                 row = {
-                    "rule": rule,
+                    "rule": result_rule,
                     "k": k,
                     "seed": seed,
                     "planning_status": design.status,
@@ -294,7 +432,8 @@ def main() -> None:
                 rows.append(row)
                 _write(rows, output_dir)
                 print(
-                    f"{rule:<9} K={k} seed={seed} | plan {row['planning_status']:<10} "
+                    f"{result_rule:<14} K={k} seed={seed} | "
+                    f"plan {row['planning_status']:<10} "
                     f"gap={row['planning_gap']:.4f} t={row['planning_seconds']:6.1f}s | "
                     f"{row['installed']:<8} {row['power_mw']:.3f} MW "
                     f"{row['energy_mwh']:.3f} MWh {row['duration_h']:.2f} h "

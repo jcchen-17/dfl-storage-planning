@@ -45,6 +45,7 @@ from storage_dfl.network import ieee13_unbalanced_microgrid
 from storage_dfl.planning import PlanningJob, PlanningResult, StorageDesign
 from storage_dfl.planning.results import infeasible_result
 from storage_dfl.dfl.scenario_bo import train_scenario_bo
+from scripts.sweep_k import _generator_candidate_pool, _generator_initial_support
 
 
 def test_ieee13_is_radial() -> None:
@@ -78,7 +79,6 @@ def test_codec_cvae_and_direct_support() -> None:
     trajectories, contexts = codec.encode_pool(pool)
     assert trajectories.shape == (10, 6 * (3 * 13 * 3 + 4))
     assert contexts.shape == (10, 3)
-
     model = ConditionalVAE(
         trajectory_dim=codec.trajectory_dim,
         context_dim=codec.context_dim,
@@ -115,6 +115,36 @@ def test_codec_cvae_and_direct_support() -> None:
         initial_latent=torch.ones(2, 4),
     )
     assert torch.allclose(initialized.latent_location, torch.ones(2, 4))
+
+
+def test_cvae_baseline_pool_and_initial_support_are_reproducible() -> None:
+    feeder = ieee13_unbalanced_microgrid()
+    pool = make_toy_scenarios(feeder, num_scenarios=10, horizon=6, seed=23)
+    codec = ScenarioCodec.fit(pool, feeder)
+    model = ConditionalVAE(
+        trajectory_dim=codec.trajectory_dim,
+        context_dim=codec.context_dim,
+        latent_dim=4,
+        hidden_dim=16,
+    ).eval()
+    first = _generator_candidate_pool(
+        model, codec, pool, count=12, seed=31, device=torch.device("cpu")
+    )
+    second = _generator_candidate_pool(
+        model, codec, pool, count=12, seed=31, device=torch.device("cpu")
+    )
+    assert len(first.scenarios) == 12
+    assert np.allclose(
+        ScenarioCodec.pack(first.scenarios[0]),
+        ScenarioCodec.pack(second.scenarios[0]),
+    )
+
+    scenarios, weights, labels = _generator_initial_support(
+        model, codec, pool, count=3, device=torch.device("cpu")
+    )
+    assert len(scenarios) == len(weights) == len(labels) == 3
+    assert np.isclose(sum(weights), 1.0)
+    assert all(label.startswith("reconstruction:") for label in labels)
 
 
 def test_decision_aware_cvae_loss_runs() -> None:

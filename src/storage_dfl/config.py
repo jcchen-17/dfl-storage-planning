@@ -143,6 +143,11 @@ class DFLConfig:
     # validation. Keeping more than the single best noisy minibatch incumbent
     # prevents a late lucky sample from replacing a consistently good design.
     reinforce_finalists: int = 4
+    # Optional decision-scale early stopping. A material improvement must exceed
+    # decision_deadband_relative times the best validation objective; smaller
+    # movements are below the resolution at which candidates are ranked.
+    early_stopping_patience: int = 0
+    early_stopping_min_epochs: int = 20
 
 
 @dataclass(frozen=True)
