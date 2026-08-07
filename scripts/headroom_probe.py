@@ -124,6 +124,14 @@ def main() -> None:
     # once the comparison is settled.
     ap.add_argument("--carbon-cap", type=float, default=None,
                     help="override planning.dc_carbon_cap for this probe")
+    # The tolerance has to be small against the quantity being measured, and
+    # storage_value here is a difference of two objectives near 1.72M. At the
+    # committed 1e-3 that leaves +-1,724 unresolved while the values themselves
+    # span roughly 900 to 4,200 -- so two runs can both stop "optimal" on
+    # different incumbents and disagree by more than the effect being studied.
+    # Sweep this against the default before trusting any ranking.
+    ap.add_argument("--relative-gap", type=float, default=None,
+                    help="override planning.solver_relative_gap")
     args = ap.parse_args()
 
     tag = args.tag or (args.regime or "all").replace("price_", "")
@@ -151,9 +159,15 @@ def main() -> None:
         if args.carbon_cap is None
         else args.carbon_cap
     )
+    gap = (
+        config.planning.solver_relative_gap
+        if args.relative_gap is None
+        else args.relative_gap
+    )
     planning = replace(
         config.planning,
         dc_carbon_cap=cap,
+        solver_relative_gap=gap,
         solver_threads=args.threads,
         solver_max_parallel_workers=1,
         solver_memory_limit_mb=args.memory_limit,
@@ -161,7 +175,8 @@ def main() -> None:
         verbose_solver=False,
     )
     print(f"dc_carbon_cap {cap}, carbon_price "
-          f"{config.costs.carbon_price_dollars_per_t:g} $/tCO2", flush=True)
+          f"{config.costs.carbon_price_dollars_per_t:g} $/tCO2, "
+          f"solver_relative_gap {gap:g}", flush=True)
     oracle = StoragePlanningOracle(
         feeder, planning, config.costs, config.data, config.data_center
     )
