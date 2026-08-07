@@ -268,15 +268,32 @@ planning:
   # The production formulation is a pure MILP, where the gap between solvers is
   # widest. Gurobi needs gurobipy plus a license large enough for this model.
   solver_backend: gurobi
-  # Sized against the differences actually being ranked. At 0.005 the tolerance
-  # left 7,650 of the objective unresolved while a whole 15-epoch run varied by
-  # 1,154: the ordering carried solver noise, and the policy travelled at 0.97x
-  # a pure random walk. 0.0005 resolved that but overshot. The signal is 13,040
-  # (0.845%) between installing storage and not, and 4,490 (0.29%) among the
-  # designs that do install; 0.001 leaves a floor of 1,530, which is 8.5x and
-  # 2.9x those. Precision below that is unused and expensive -- a solve reaches
-  # 0.20% at 90 s and then spends ~200 s in the root cut loop to reach 0.05%.
-  solver_relative_gap: 0.001
+  # Sized against the differences actually being ranked, which is why it had to
+  # come down when storage stopped earning against price and started earning
+  # against carbon. The reasoning for the previous 0.001 cited a signal of
+  # 13,040 between building and not building and 4,490 among designs that build;
+  # both were measured under the synthetic price regimes. Storage values now
+  # span roughly 1,700 to 4,800, while 0.001 on a 1.72M objective leaves +-1,724
+  # unresolved -- as large as the effect.
+  #
+  # It showed. Same pool, same threads, K=1, only the tolerance changed:
+  #   rule         0.001    0.0001     design
+  #   random s0    3,485 ->  4,141     unchanged
+  #   random s1    3,910 ->  4,799     unchanged
+  #   random s2    2,666 ->  3,905     unchanged
+  #   kmeans       3,485 ->  4,141     unchanged
+  #   farthest     3,050 ->  4,294     changed
+  #   aggregate    1,720 ->  2,751     unchanged
+  # Every value is understated at 0.001 by 650-1,250, and mostly with the design
+  # held fixed -- so the error is in the evaluation solve, not in which design
+  # got picked. kmeans and farthest swap places between the two columns, which
+  # is the failure this tolerance exists to prevent. Reproduced identically on
+  # two machines, so it is a systematic stopping bias rather than luck.
+  #
+  # Apparent spread shrinks with it: sd/mean over the same three seeds goes from
+  # 19% to 11%, meaning a good part of the variation attributed to scenario
+  # choice was the solver. Any headroom measured at 0.001 needs redoing here.
+  solver_relative_gap: 0.0001
   # Two, measured by scripts/tune_solver.py on the training machine (i7-14650HX,
   # 16 physical / 24 logical, 32 GB) on the K=1 planning solve:
   #   2 threads 4.3 s | 4 threads 4.1 s | 8 threads 5.3 s | 16 threads 4.1 s
