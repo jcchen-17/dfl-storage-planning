@@ -3,6 +3,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from storage_dfl.data import (
@@ -362,6 +363,15 @@ def test_rank_advantages_survive_an_infeasible_sample() -> None:
     assert tied[0] == tied[1]
     assert tied[2] > tied[0]
 
+    # Differences below the solver-resolution deadband are not a learnable
+    # ordering and must carry the same policy signal.
+    near_tied = _rank_advantages(
+        np.asarray([1_000_000.0, 1_000_300.0, 1_002_000.0]),
+        relative_deadband=0.0005,
+    )
+    assert near_tied[0] == near_tied[1]
+    assert near_tied[2] > near_tied[0]
+
     single = _rank_advantages(np.asarray([3.0]))
     assert single.shape == (1,)
     assert single[0] == 0.0
@@ -510,7 +520,7 @@ def test_reinforce_epoch_batches_its_validations_and_keeps_them_aligned() -> Non
     assert result.planning_result.feasible
 
 
-def test_finalist_validation_warns_when_it_did_not_converge(capsys) -> None:
+def test_finalist_validation_rejects_results_that_did_not_converge(capsys) -> None:
     """The design a run reports is picked by two solves over
     final_validation_size scenarios, run under the training memory budget. A
     solve that stops on memlimit still reports a finite objective and passes
@@ -538,7 +548,11 @@ def test_finalist_validation_warns_when_it_did_not_converge(capsys) -> None:
             )
             # Only the fixed-design solves stall, which is the real pattern: the
             # planning solves are smaller and converge.
-            status = "memlimit" if fixed_design is not None else "optimal"
+            status = (
+                "memlimit"
+                if fixed_design is not None and len(scenario_tuple) >= 4
+                else "optimal"
+            )
             return PlanningResult(
                 status=status,
                 objective=100.0,
@@ -576,13 +590,14 @@ def test_finalist_validation_warns_when_it_did_not_converge(capsys) -> None:
         policy_samples_per_epoch=2,
     )
     policy = DirectSupportPolicy(support_count=2, latent_dim=4, seed=11)
-    train_direct_generator(
-        policy, cvae, codec, pool, StalledFinalistOracle(), config, seed=13
-    )
+    with pytest.raises(RuntimeError, match="No REINFORCE finalist completed"):
+        train_direct_generator(
+            policy, cvae, codec, pool, StalledFinalistOracle(), config, seed=13
+        )
 
     printed = capsys.readouterr().out
-    assert "finalist validation stopped at 'memlimit'" in printed
-    assert "unproven incumbents" in printed
+    assert "excluded finalist" in printed
+    assert "'memlimit'" in printed
 
 
 def test_solve_many_batches_fixed_designs_without_repeating_the_bootstrap() -> None:

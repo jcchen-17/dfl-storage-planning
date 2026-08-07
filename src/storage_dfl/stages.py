@@ -408,6 +408,10 @@ def train_dfl_stage(
         "support_conditions": torch.as_tensor(result.support_conditions),
         "scenario_weights": torch.as_tensor(result.scenario_weights),
         "support_source_names": support_source_names,
+        # Evaluation decodes the supports and replans. Persist the design chosen
+        # during training so a near-degenerate replan that flips bus or capacity
+        # is visible instead of looking like a change learned by DFL.
+        "selected_training_design": result.planning_result.to_dict()["design"],
     }
     if policy is not None:
         checkpoint["policy_state_dict"] = policy.state_dict()
@@ -511,6 +515,17 @@ def _scenario_set_summary(
     }
 
 
+def _bounded_result(result) -> bool:
+    """Whether an objective is comparable rather than just a finite incumbent."""
+
+    return (
+        result.feasible
+        and result.status in {"optimal", "gaplimit"}
+        and isfinite(result.objective)
+        and isfinite(result.relative_gap)
+    )
+
+
 @torch.no_grad()
 def evaluate_stage(
     config_path: str | Path,
@@ -591,6 +606,36 @@ def evaluate_stage(
             f"Evaluation planning failed with status {planning.status!r} after "
             f"{planning.solve_time_seconds:.1f} seconds."
         )
+    training_design = checkpoint.get("selected_training_design")
+    design_changed_on_replan = None
+    if training_design is not None:
+        replanned_design = planning.to_dict()["design"]
+        training_installed = {
+            bus for bus, value in training_design["site"].items() if value > 0
+        }
+        replanned_installed = {
+            bus for bus, value in replanned_design["site"].items() if value > 0
+        }
+        capacity_delta = max(
+            (
+                abs(float(replanned_design[field][bus]) - float(training_design[field][bus]))
+                for field in ("power_mw", "energy_mwh")
+                for bus in training_design[field]
+            ),
+            default=0.0,
+        )
+        design_changed_on_replan = (
+            training_installed != replanned_installed or capacity_delta > 0.01
+        )
+        if design_changed_on_replan:
+            print(
+                "WARNING: replanning the saved support changed the selected "
+                f"training design: buses {sorted(training_installed)} -> "
+                f"{sorted(replanned_installed)}, maximum capacity change "
+                f"{capacity_delta:.4f}. This indicates solver/tie instability, "
+                "not a new DFL update.",
+                flush=True,
+            )
     validation = oracle.solve(
         evaluation_pool.scenarios,
         fixed_design=planning.design,
@@ -619,9 +664,12 @@ def evaluate_stage(
         "test_split": config.data.test_split,
         "test_scenarios_evaluated": len(evaluation_pool.scenarios),
         "no_storage_reference": reference.to_dict(),
+        "objectives_comparable": (
+            _bounded_result(reference) and _bounded_result(validation)
+        ),
         "storage_value": (
             float(reference.objective) - float(validation.objective)
-            if reference.feasible
+            if _bounded_result(reference) and _bounded_result(validation)
             else None
         ),
         "generated_scenarios": [
@@ -633,6 +681,8 @@ def evaluate_stage(
             "observed_test": _scenario_set_summary(evaluation_pool.scenarios),
         },
         "planning": planning.to_dict(),
+        "selected_training_design": training_design,
+        "design_changed_on_replan": design_changed_on_replan,
         "out_of_sample_validation": validation.to_dict(),
     }
     _write_json(paths.dfl_json_for("result", tag), payload)

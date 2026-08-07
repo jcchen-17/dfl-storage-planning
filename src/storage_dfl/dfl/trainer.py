@@ -46,6 +46,16 @@ class DFLTrainingResult:
         return [asdict(record) for record in self.history]
 
 
+@dataclass(frozen=True)
+class _ReinforceFinalist:
+    scenarios: tuple[Scenario, ...]
+    weights: tuple[float, ...]
+    latent: np.ndarray
+    plan: PlanningResult
+    validation_loss: float
+    source: str
+
+
 def resolve_device(requested: str) -> torch.device:
     if requested == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -74,8 +84,20 @@ def _decode_support(
 INFEASIBLE_LOSS = 1.0e12
 
 
-def _finite_loss(result: PlanningResult) -> float:
-    return float(result.objective) if result.feasible and isfinite(result.objective) else INFEASIBLE_LOSS
+def _converged(result: PlanningResult) -> bool:
+    """Return whether an objective is supported by a valid termination bound."""
+
+    return (
+        result.feasible
+        and isfinite(result.objective)
+        and result.status in {"optimal", "gaplimit"}
+        and isfinite(result.relative_gap)
+    )
+
+
+def _finite_loss(result: PlanningResult, *, require_converged: bool = False) -> float:
+    usable = _converged(result) if require_converged else result.feasible
+    return float(result.objective) if usable and isfinite(result.objective) else INFEASIBLE_LOSS
 
 
 def _safe_number(value: float, fallback: float) -> float:
@@ -97,7 +119,10 @@ def _design_summary(result: PlanningResult) -> str:
     return f"installed={installed}, P={power:.4f} MW, E={energy:.4f} MWh"
 
 
-def _rank_advantages(losses: np.ndarray) -> np.ndarray:
+def _rank_advantages(
+    losses: np.ndarray,
+    relative_deadband: float = 0.0,
+) -> np.ndarray:
     """Scale-free advantages in [-1, 1] from the ordering of the losses alone.
 
     Standardizing raw costs let one infeasible sample (INFEASIBLE_LOSS) inflate
@@ -108,17 +133,62 @@ def _rank_advantages(losses: np.ndarray) -> np.ndarray:
     """
 
     count = losses.shape[0]
+    if count == 0:
+        return np.empty(0, dtype=float)
     order = np.argsort(losses, kind="stable")
     ranks = np.empty(count, dtype=float)
     ranks[order] = np.arange(count, dtype=float)
-    # Tied costs must receive identical advantages; distinct ranks would push
-    # the policy away from one of two indistinguishable outcomes.
-    for value in np.unique(losses):
-        tied = losses == value
-        if int(tied.sum()) > 1:
-            ranks[tied] = float(ranks[tied].mean())
+    # Solver objectives inside the requested MIP gap are not measurably
+    # different. Treat neighbouring values inside that deadband as ties rather
+    # than turning numerical ordering into a policy gradient.
+    finite = losses[np.isfinite(losses) & (losses < INFEASIBLE_LOSS)]
+    scale = max(float(np.median(np.abs(finite))) if finite.size else 1.0, 1.0)
+    tolerance = max(float(relative_deadband), 0.0) * scale
+    group_start = 0
+    while group_start < count:
+        group_end = group_start + 1
+        anchor = float(losses[order[group_start]])
+        while group_end < count:
+            value = float(losses[order[group_end]])
+            if value - anchor > tolerance:
+                break
+            group_end += 1
+        members = order[group_start:group_end]
+        if len(members) > 1:
+            ranks[members] = float(ranks[members].mean())
+        group_start = group_end
     center = (count - 1) / 2.0
     return (ranks - center) / max(center, 1.0)
+
+
+def _design_signature(result: PlanningResult) -> tuple:
+    """Decision signature at meaningful engineering resolution.
+
+    Five-decimal capacity differences made practically identical designs look
+    distinct and created a false action-dependent signal. 10 kW / 10 kWh is
+    already finer than the accuracy supported by these planning solves.
+    """
+
+    buses = tuple(result.design.power_mw)
+    return (
+        tuple(sorted(result.design.installed_buses)),
+        tuple(round(float(result.design.power_mw[bus]), 2) for bus in buses),
+        tuple(round(float(result.design.energy_mwh[bus]), 2) for bus in buses),
+    )
+
+
+def _retain_finalist(
+    finalists: dict[tuple, _ReinforceFinalist],
+    candidate: _ReinforceFinalist,
+    limit: int,
+) -> None:
+    signature = _design_signature(candidate.plan)
+    previous = finalists.get(signature)
+    if previous is None or candidate.validation_loss < previous.validation_loss:
+        finalists[signature] = candidate
+    if len(finalists) > max(1, limit):
+        worst = max(finalists, key=lambda key: finalists[key].validation_loss)
+        del finalists[worst]
 
 
 def train_direct_generator(
@@ -173,11 +243,7 @@ def train_direct_generator(
     initial_latent = policy.latent_location.detach().clone()
     baseline: float | None = None
     infeasible_samples = 0
-    best_loss = float("inf")
-    best_scenarios: tuple[Scenario, ...] | None = None
-    best_weights: tuple[float, ...] | None = None
-    best_latent: np.ndarray | None = None
-    best_plan: PlanningResult | None = None
+    finalists: dict[tuple, _ReinforceFinalist] = {}
     records: list[EpochRecord] = []
 
     epoch_seconds: list[float] = []
@@ -242,7 +308,7 @@ def train_direct_generator(
             # An infeasible plan has no design to validate, so it stands in for
             # its own validation, as it did when the two solves were adjacent.
             validation = validations.get(sample_index, plan)
-            decision_loss = _finite_loss(validation)
+            decision_loss = _finite_loss(validation, require_converged=True)
             if decision_loss >= INFEASIBLE_LOSS:
                 infeasible_samples += 1
                 infeasible_in_epoch += 1
@@ -257,14 +323,7 @@ def train_direct_generator(
             )
 
         decision_losses = np.asarray([candidate[5] for candidate in candidates], dtype=float)
-        design_signatures = {
-            (
-                tuple(sorted(candidate[3].design.installed_buses)),
-                tuple(round(value, 5) for value in candidate[3].design.power_mw.values()),
-                tuple(round(value, 5) for value in candidate[3].design.energy_mwh.values()),
-            )
-            for candidate in candidates
-        }
+        design_signatures = {_design_signature(candidate[3]) for candidate in candidates}
         # The baseline tracks attainable cost, so an infeasible sentinel must not
         # enter it; otherwise one failed sample poisons every later comparison.
         feasible_losses = decision_losses[decision_losses < INFEASIBLE_LOSS]
@@ -272,7 +331,10 @@ def train_direct_generator(
             feasible_losses.mean() if feasible_losses.size else decision_losses.mean()
         )
         if len(candidates) > 1:
-            advantages = _rank_advantages(decision_losses)
+            advantages = _rank_advantages(
+                decision_losses,
+                relative_deadband=config.decision_deadband_relative,
+            )
             # Identical downstream designs carry no action-dependent signal.
             if len(design_signatures) == 1:
                 advantages = np.zeros_like(advantages)
@@ -307,12 +369,20 @@ def train_direct_generator(
         epoch_best = candidates[int(np.argmin(decision_losses))]
         sample, generated, weights, plan, validation, decision_loss = epoch_best
 
-        if plan.feasible and decision_loss < best_loss:
-            best_loss = decision_loss
-            best_scenarios = generated
-            best_weights = weights
-            best_latent = sample.latent.cpu().numpy().copy()
-            best_plan = plan
+        for sample, generated, weights, plan, _, decision_loss in candidates:
+            if plan.feasible and decision_loss < INFEASIBLE_LOSS:
+                _retain_finalist(
+                    finalists,
+                    _ReinforceFinalist(
+                        scenarios=generated,
+                        weights=weights,
+                        latent=sample.latent.cpu().numpy().copy(),
+                        plan=plan,
+                        validation_loss=float(decision_loss),
+                        source=f"epoch {epoch + 1} sample",
+                    ),
+                    config.reinforce_finalists,
+                )
 
         latent_shift = float(
             (policy.latent_location.detach() - initial_latent).abs().mean()
@@ -399,10 +469,10 @@ def train_direct_generator(
     total_policy_samples = config.epochs * max(1, config.policy_samples_per_epoch)
     if infeasible_samples == total_policy_samples:
         raise RuntimeError(
-            f"All {config.epochs} DFL epochs ended without a feasible plan, so the "
-            "policy was never exposed to a planning gradient and this run carries "
-            "no decision-focused signal.  Establish that the oracle can produce a "
-            "feasible incumbent before training: raise "
+            f"All {config.epochs} DFL epochs ended without a converged validation "
+            "reward, so the policy was never exposed to a trustworthy planning "
+            "gradient and this run carries no decision-focused signal. Establish "
+            "that the oracle can produce a bounded incumbent before training: raise "
             "planning.solver_time_limit_seconds, relax planning.solver_relative_gap, "
             "or fall back along carbon_formulation "
             "(system_average -> aggregate_mccormick -> mccormick -> exact)."
@@ -426,76 +496,80 @@ def train_direct_generator(
     final_validation_scenarios = observed_pool.subset(
         final_validation_indices.tolist()
     )
-    # The deterministic and best-epoch designs are frequently the ones already
-    # validated during training; when final_validation_size matches
-    # validation_batch_size these calls then cost nothing at all.
+    candidate_by_signature: dict[tuple, _ReinforceFinalist] = {}
     if deterministic_plan.feasible:
-        deterministic_validation = oracle.solve(
+        deterministic_candidate = _ReinforceFinalist(
+            scenarios=deterministic_scenarios,
+            weights=deterministic_weights,
+            latent=deterministic_latent.cpu().numpy().copy(),
+            plan=deterministic_plan,
+            validation_loss=float("inf"),
+            source="deterministic policy",
+        )
+        candidate_by_signature[_design_signature(deterministic_plan)] = (
+            deterministic_candidate
+        )
+    # One representative per engineering-distinct design is enough. The fixed-
+    # design objective depends on the design, not on which latent generated it.
+    for signature, finalist in finalists.items():
+        candidate_by_signature.setdefault(signature, finalist)
+
+    final_results: list[tuple[_ReinforceFinalist, PlanningResult, float]] = []
+    for finalist_index, finalist in enumerate(candidate_by_signature.values(), start=1):
+        validation = oracle.solve(
             final_validation_scenarios,
-            fixed_design=deterministic_plan.design,
+            fixed_design=finalist.plan.design,
             allow_carbon_slack=True,
             use_cache=True,
         )
-        deterministic_loss = _finite_loss(deterministic_validation)
-    else:
-        deterministic_validation = deterministic_plan
-        deterministic_loss = float("inf")
-
-    print(
-        "DFL final deterministic: "
-        f"plan={deterministic_plan.status}/{deterministic_plan.objective:.6g}, "
-        f"validation={deterministic_validation.status}/"
-        f"{deterministic_validation.objective:.6g}; "
-        f"{_design_summary(deterministic_plan)}",
-        flush=True,
-    )
-
-    if best_plan is not None:
-        best_full_validation = oracle.solve(
-            final_validation_scenarios,
-            fixed_design=best_plan.design,
-            allow_carbon_slack=True,
-            use_cache=True,
+        final_loss = _finite_loss(validation, require_converged=True)
+        print(
+            f"DFL finalist {finalist_index}/{len(candidate_by_signature)} "
+            f"({finalist.source}): validation={validation.status}/"
+            f"{validation.objective:.6g}; {_design_summary(finalist.plan)}",
+            flush=True,
         )
-        best_full_loss = _finite_loss(best_full_validation)
-    else:
-        best_full_validation = None
-        best_full_loss = float("inf")
-
-    # This comparison picks the design the whole run reports, and it is the one
-    # place where final_validation_size scenarios are solved under the training
-    # memory budget -- the larger model against a budget sized for
-    # solver_max_parallel_workers concurrent solves. A solve that stops on
-    # memlimit still passes `feasible`, so without this the finalist would be
-    # chosen by comparing two incumbents nobody bounded, silently.
-    for label, result in (
-        ("deterministic", deterministic_validation),
-        ("best-epoch", best_full_validation),
-    ):
-        if result is not None and result.status != "optimal":
+        if final_loss >= INFEASIBLE_LOSS:
             print(
-                f"WARNING: the {label} finalist validation stopped at "
-                f"{result.status!r} over {len(final_validation_scenarios)} "
-                "scenarios, so the design this run reports was chosen by comparing "
-                "unproven incumbents. Set final_validation_size equal to "
-                "validation_batch_size for training and use evaluate.py's "
-                "--scenarios and --memory-limit for the large evaluation instead.",
+                f"WARNING: excluded finalist because validation stopped at "
+                f"{validation.status!r} without a usable bound over "
+                f"{len(final_validation_scenarios)} scenarios.",
                 flush=True,
             )
-    if best_plan is None or deterministic_loss <= best_full_loss:
-        chosen_scenarios = deterministic_scenarios
-        chosen_weights = deterministic_weights
-        chosen_plan = deterministic_plan
-        full_validation = deterministic_validation
-        chosen_latent = deterministic_latent.cpu().numpy().copy()
-        chosen_source = "deterministic policy"
-    else:
-        chosen_scenarios = best_scenarios
-        chosen_weights = best_weights
-        chosen_plan = best_plan
-        full_validation = best_full_validation
-        chosen_latent = best_latent
-        chosen_source = "best sampled epoch"
+        else:
+            final_results.append((finalist, validation, final_loss))
+
+    if not final_results:
+        raise RuntimeError(
+            "No REINFORCE finalist completed the common final validation with a "
+            "usable optimal/gap-limit bound. No checkpoint was selected from "
+            "unproven incumbents. Set final_validation_size equal to "
+            "validation_batch_size, reduce solver_max_parallel_workers and give "
+            "each solve more memory, or raise solver_memory_limit_mb."
+        )
+
+    best_final_loss = min(item[2] for item in final_results)
+    final_deadband = max(config.decision_deadband_relative, 0.0) * max(
+        abs(best_final_loss), 1.0
+    )
+    statistically_tied = [
+        item for item in final_results if item[2] <= best_final_loss + final_deadband
+    ]
+    # If the objective cannot distinguish finalists at solver accuracy, prefer
+    # the cheaper/smaller design rather than rewarding oversizing by noise.
+    chosen, full_validation, _ = min(
+        statistically_tied,
+        key=lambda item: (
+            float(item[0].plan.investment_cost),
+            sum(item[0].plan.design.energy_mwh.values()),
+            sum(item[0].plan.design.power_mw.values()),
+        ),
+    )
+    chosen_scenarios = chosen.scenarios
+    chosen_weights = chosen.weights
+    chosen_plan = chosen.plan
+    chosen_latent = chosen.latent
+    chosen_source = chosen.source
 
     if (
         chosen_scenarios is None
@@ -509,9 +583,9 @@ def train_direct_generator(
             f"DFL planning produced no feasible solution: status={chosen_plan.status!r}, "
             f"seconds={chosen_plan.solve_time_seconds:.1f}."
         )
-    if not full_validation.feasible:
+    if not _converged(full_validation):
         raise RuntimeError(
-            f"DFL validation produced no feasible solution: status={full_validation.status!r}, "
+            f"DFL validation did not converge: status={full_validation.status!r}, "
             f"seconds={full_validation.solve_time_seconds:.1f}."
         )
     print(

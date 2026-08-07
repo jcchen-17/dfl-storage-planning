@@ -129,10 +129,14 @@ dfl:
   bo_exploration: 1.5
   bo_weight_floor: 0.02
   bo_finalists: 2
-  # Must track solver_relative_gap: a deadband wider than the differences being
-  # ranked discards the whole signal. At 0.005 it spanned 7,650 while the run's
-  # entire spread was 1,154.
-  decision_deadband_relative: 0.0005
+  # Keep several engineering-distinct REINFORCE designs and compare all of
+  # them once on the same final validation set. This is model selection on the
+  # validation split only; the test split remains sealed until evaluate.py.
+  reinforce_finalists: 4
+  # Match the requested MIP gap. Differences smaller than this are not reliably
+  # ordered by the solver and must be ties, otherwise REINFORCE learns numerical
+  # noise. The finalist tie-break then prefers the cheaper/smaller design.
+  decision_deadband_relative: 0.001
   device: auto
 
 data_center:
@@ -258,5 +262,3 @@ costs:
 
 # Keep the T2 checkpoints and evaluation reports separate from K3T1.
 output_dir: outputs/generator_comparison_k3t2_48h
-
-

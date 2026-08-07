@@ -139,6 +139,10 @@ class DFLConfig:
     bo_weight_floor: float = 0.02
     bo_finalists: int = 2
     decision_deadband_relative: float = 0.005
+    # Number of distinct REINFORCE designs retained for a common final
+    # validation. Keeping more than the single best noisy minibatch incumbent
+    # prevents a late lucky sample from replacing a consistently good design.
+    reinforce_finalists: int = 4
 
 
 @dataclass(frozen=True)
