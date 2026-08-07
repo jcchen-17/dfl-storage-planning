@@ -129,6 +129,13 @@ class DFLConfig:
     policy_samples_per_epoch: int = 1
     latent_prior_weight: float = 0.001
     method: str = "reinforce"
+    # Which rule picks the scenarios the REINFORCE policy starts from. One of
+    # dfl.SUPPORT_INIT_RULES. Defaults to "farthest" so existing runs reproduce,
+    # but that rule is a bad seed at small K -- it returns the row farthest from
+    # the centroid, an extreme-net-load day with a flat price curve, and price
+    # spread is what storage value tracks. Only the starting point moves; the
+    # validation and test subsets are chosen elsewhere and are unaffected.
+    support_init_rule: str = "farthest"
     candidate_pool_size: int = 12
     bo_initial_evaluations: int = 6
     bo_iterations: int = 6
@@ -234,6 +241,28 @@ class PlanningConfig:
     # one it stops at 'memorylimit' and returns its incumbent, which the pipeline
     # can still use. Budget roughly (usable RAM) / solver_max_parallel_workers.
     solver_memory_limit_mb: float = 0.0
+    # How the McCormick relaxation bounds incoming power, which is what decides
+    # whether a carbon cap can bind at all.
+    #
+    # The envelope's useful direction is incoming_carbon <= bound * nodal_carbon,
+    # i.e. nodal_carbon >= incoming_carbon / bound, so a loose bound weakens the
+    # cap in proportion. "line_rating" sums line thermal ratings, which on this
+    # feeder exceed real flows by more than an order of magnitude: with it, a cap
+    # of 0.05 tCO2/MWh stays feasible even though the cleanest grid hour is 0.171
+    # and no bus can physically be cleaner than its supply. The carbon cap is
+    # then decorative -- measured, it never binds at any value.
+    #
+    # "demand" bounds incoming power by what the bus can actually absorb, using
+    # the model's own balance identity
+    #     incoming = load + charge + reverse_in + forward_out
+    # every term of which is nonnegative, so bounding each term by its own
+    # maximum bounds the sum. It is combined with the rating bound by min, so
+    # enabling it can only tighten the relaxation, never admit a new solution.
+    #
+    # Default is "line_rating" so existing runs reproduce. Validate a switch by
+    # solving once with a NON-binding cap under both settings: the objectives
+    # must match, which shows the tighter bound cut off nothing feasible.
+    carbon_envelope_bound: str = "line_rating"
 
 
 @dataclass(frozen=True)
@@ -249,6 +278,23 @@ class CostConfig:
     shedding_dollars_per_mwh: float
     validation_carbon_slack_dollars: float
     generator_dollars_per_mwh: float = 125.0
+    # Dollars per tonne of CO2 emitted beyond dc_carbon_cap. Zero keeps the
+    # historical behaviour, where exceeding the cap costs
+    # validation_carbon_slack_dollars times a DIMENSIONLESS slack that the
+    # constraint scales by a big-M -- so the implied price per tonne moves with
+    # that big-M rather than being a property of the world, and the "value of
+    # storage" it produces is an artifact of the bound. Measured on this case:
+    # at dc_carbon_cap 0.30 the cap did not bind and storage was worth 82,652;
+    # at 0.22 it bound and storage was worth 7,238,309, essentially all of it
+    # avoided penalty. There is no cap in between where the cap binds and
+    # compliance is still reachable without penalty, so a hard cap alone cannot
+    # produce a defensible number here.
+    #
+    # Set this positive to price the excess directly in tonnes instead. The
+    # excess variable then carries physical units, needs no big-M, and the price
+    # can cite something real: roughly 185 $/tCO2 for the US social cost of
+    # carbon, or 50-100 $/tCO2 for traded credits.
+    carbon_price_dollars_per_t: float = 0.0
 
 
 @dataclass(frozen=True)

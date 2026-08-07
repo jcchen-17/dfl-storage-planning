@@ -154,6 +154,13 @@ class PlanningJob:
     fixed_design: StorageDesign | None = None
 
 
+# Upper bound on the share of one interval's workload that may be processed in
+# that interval. Shared deliberately: the "demand" carbon envelope sizes the
+# facility's largest possible draw from it, and if the two ever diverged that
+# bound would become invalid and would silently cut off feasible dispatches.
+_PROCESSED_UPPER = 1.2
+
+
 def _add_mccormick_envelope(
     model: Model,
     product: object,
@@ -212,6 +219,14 @@ class StoragePlanningOracle:
         if planning.flow_limit_formulation not in {"quadratic", "polygon"}:
             raise ValueError(
                 "flow_limit_formulation must be 'quadratic' or 'polygon'"
+            )
+        # A typo here would silently fall through to the loose rating bound and
+        # leave the carbon cap non-binding, which is the failure this option
+        # exists to fix -- so reject it rather than ignore it.
+        if planning.carbon_envelope_bound not in {"line_rating", "demand"}:
+            raise ValueError(
+                "carbon_envelope_bound must be 'line_rating' or 'demand', got "
+                f"{planning.carbon_envelope_bound!r}"
             )
         self._cache: dict[tuple, PlanningResult] = {}
         # The no-storage bootstrap depends only on the scenario set, the weights
@@ -895,6 +910,25 @@ class StoragePlanningOracle:
             (bus, phase): [edge for edge in phase_edges if edge[1] == bus and edge[2] == phase]
             for bus, phase in node_phases
         }
+        # Descendants of each bus in the radial tree, used by the "demand"
+        # envelope bound to size how much power can flow through a bus toward
+        # what lies below it. Built once; the topology does not vary by scenario.
+        children: dict[str, list[str]] = {bus: [] for bus in buses}
+        for line in feeder.lines:
+            children[line.parent].append(line.child)
+        descendants: dict[str, tuple[str, ...]] = {}
+
+        def _collect(bus: str) -> tuple[str, ...]:
+            if bus not in descendants:
+                found: list[str] = []
+                for child in children[bus]:
+                    found.append(child)
+                    found.extend(_collect(child))
+                descendants[bus] = tuple(found)
+            return descendants[bus]
+
+        for bus in buses:
+            _collect(bus)
 
         # Every backend builds this model through the same 1,500 lines below, so
         # a difference between them can only come from the solver, never from a
@@ -993,7 +1027,45 @@ class StoragePlanningOracle:
             states = range(horizon + 1)
             layers = range(horizon + 1)
 
-            processed = {t: model.addVar(lb=0.0, ub=1.2, name=f"work[{sid},{t}]") for t in times}
+            # Power a bus can absorb / inject in one interval. Used by the
+            # "demand" carbon envelope to replace line thermal ratings, which
+            # exceed real flows by more than an order of magnitude and leave the
+            # relaxation too loose for any carbon cap to bind. Loads are data,
+            # so absorption is exact; injection uses each source's own limit.
+            def absorbed_at(bus: str, t: int) -> float:
+                total = float(scenario.active_load_mw[t, bus_index[bus]].sum())
+                if bus == feeder.data_center_bus:
+                    total += dccfg.power_mw(
+                        float(scenario.pue[t]), _PROCESSED_UPPER
+                    )
+                if bus in candidates:
+                    total += pcfg.max_power_mw
+                return total
+
+            def injected_at(bus: str, t: int) -> float:
+                total = float(scenario.pv_available_mw[t, bus_index[bus]].sum())
+                if bus == feeder.generator_bus:
+                    total += pcfg.backup_generator_mw
+                if bus == root:
+                    total += pcfg.grid_limit_mw
+                if bus in candidates:
+                    total += pcfg.max_power_mw
+                return total
+
+            def subtree_absorbed(bus: str, t: int) -> float:
+                return absorbed_at(bus, t) + sum(
+                    absorbed_at(other, t) for other in descendants[bus]
+                )
+
+            def subtree_injected(bus: str, t: int) -> float:
+                return injected_at(bus, t) + sum(
+                    injected_at(other, t) for other in descendants[bus]
+                )
+
+            processed = {
+                t: model.addVar(lb=0.0, ub=_PROCESSED_UPPER, name=f"work[{sid},{t}]")
+                for t in times
+            }
             backlog = {t: model.addVar(lb=0.0, ub=2.5, name=f"backlog[{sid},{t}]") for t in states}
             shed = {t: model.addVar(lb=0.0, name=f"shed[{sid},{t}]") for t in times}
             grid_phase = {
@@ -1480,14 +1552,26 @@ class StoragePlanningOracle:
                         name=f"voltage_drop[{sid},{edge[0]},{edge[1]},{edge[2]},{t}]",
                     )
                     if use_mccormick and not use_system_average:
+                        # Bounds on the two directional flows. The rating is a
+                        # thermal limit; what actually constrains the flow is
+                        # what lies below the edge -- forward flow can only serve
+                        # the child subtree's demand, reverse flow can only carry
+                        # that subtree's own injection. min() keeps this no looser
+                        # than the rating, so it can never admit a new solution.
+                        plus_upper = rating
+                        minus_upper = rating
+                        if pcfg.carbon_envelope_bound == "demand":
+                            child = edge[1]
+                            plus_upper = min(rating, subtree_absorbed(child, t))
+                            minus_upper = min(rating, subtree_injected(child, t))
                         carbon_plus = model.addVar(
                             lb=0.0,
-                            ub=pcfg.carbon_intensity_max * rating,
+                            ub=pcfg.carbon_intensity_max * plus_upper,
                             name=f"carbon_plus[{sid},{edge[0]},{edge[1]},{edge[2]},{t}]",
                         )
                         carbon_minus = model.addVar(
                             lb=0.0,
-                            ub=pcfg.carbon_intensity_max * rating,
+                            ub=pcfg.carbon_intensity_max * minus_upper,
                             name=f"carbon_minus[{sid},{edge[0]},{edge[1]},{edge[2]},{t}]",
                         )
                         flow_carbon_plus[edge, t] = carbon_plus
@@ -1498,7 +1582,7 @@ class StoragePlanningOracle:
                             nodal_carbon[edge[0], t],
                             flow_plus[edge, t],
                             pcfg.carbon_intensity_max,
-                            rating,
+                            plus_upper,
                         )
                         _add_mccormick_envelope(
                             model,
@@ -1506,7 +1590,7 @@ class StoragePlanningOracle:
                             nodal_carbon[edge[1], t],
                             flow_minus[edge, t],
                             pcfg.carbon_intensity_max,
-                            rating,
+                            minus_upper,
                         )
                 for phase in bus_phases[root]:
                     model.addCons(voltage[root, phase, t] == 1.0)
@@ -1649,6 +1733,18 @@ class StoragePlanningOracle:
                                 for edge in outgoing[bus, phase]
                             )
                         )
+                        if pcfg.carbon_envelope_bound == "demand":
+                            # Rearranging the per-phase active balance and summing
+                            # over phases gives the identity
+                            #     incoming = load + charge + reverse_in + forward_out
+                            # with every term nonnegative, so bounding each term
+                            # separately bounds the sum: this bus absorbs what it
+                            # absorbs, forward_out cannot exceed the subtree's
+                            # demand, and reverse_in cannot exceed its injection.
+                            incoming_power_upper = min(
+                                incoming_power_upper,
+                                subtree_absorbed(bus, t) + subtree_injected(bus, t),
+                            )
                         incoming_power_var = model.addVar(
                             lb=0.0,
                             ub=incoming_power_upper,
@@ -1712,7 +1808,28 @@ class StoragePlanningOracle:
                         + float(scenario.pv_available_mw[t].sum())
                         + len(candidates) * pcfg.max_power_mw
                     )
-                    if allow_carbon_slack:
+                    if ccfg.carbon_price_dollars_per_t > 0.0:
+                        # Excess carbon in tonnes per hour: system_carbon is an
+                        # intensity times a power, so the difference is already
+                        # t/h and needs no big-M to scale it. Priced with dt, as
+                        # every other interval cost is, so a dollar here means
+                        # the same as a dollar of energy.
+                        excess = model.addVar(
+                            lb=0.0, name=f"carbon_excess[{sid},{t}]"
+                        )
+                        model.addCons(
+                            system_carbon
+                            <= pcfg.dc_carbon_cap * system_power + excess,
+                            name=f"system_carbon_cap[{sid},{t}]",
+                        )
+                        carbon_slack_terms.append(
+                            scenario_weight
+                            * annual_blocks
+                            * ccfg.carbon_price_dollars_per_t
+                            * excess
+                            * dt
+                        )
+                    elif allow_carbon_slack:
                         slack = carbon_slack["system", t]
                         model.addCons(
                             system_carbon
