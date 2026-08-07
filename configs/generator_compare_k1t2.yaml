@@ -7,7 +7,28 @@
 seed: 0
 
 data:
-  dataset_path: data/processed/ieee13_smartds_dfl/dfl_training_windows_48h_price_regimes.npz
+  # The un-augmented windows, not the _price_regimes expansion.
+  #
+  # augment_price_regimes.py multiplies each window into five tariff regimes by
+  # scaling the price spread around its own mean, and appends the factor as a
+  # fifth context dimension. Both parts caused problems. The factor is a label,
+  # not an observation, and the REINFORCE policy optimises only the latent while
+  # the context stays fixed at the seed scenario's -- so the seed's price regime
+  # is frozen for the whole run, and with a 1.0x seed the largest price spread
+  # any latent can reach is 13.57 $/MWh against the 87-139 that good supports
+  # have. And the spread was the entire source of storage value: on the
+  # un-augmented windows the perfect-information ceiling is 0, i.e. every
+  # storage_value ever recorded here came from the synthetic multiplier.
+  #
+  # Storage now earns its value against the carbon target instead (see
+  # dc_carbon_cap and carbon_price_dollars_per_t), which is measured rather than
+  # manufactured. Uncertainty comes from load, PV, workload and grid carbon
+  # intensity, all of them real: the carbon intensity swings 0.0911 tCO2/MWh
+  # within a window on average, 35% of its own mean.
+  #
+  # Context is 4-dimensional here against 5 in the expansion, so a generator
+  # trained on the old path cannot be reused -- retrain before evaluating.
+  dataset_path: data/processed/ieee13_smartds_dfl/dfl_training_windows_48h.npz
   train_split: train
   validation_split: validation
   test_split: test
@@ -184,13 +205,58 @@ planning:
   # Backup generator, sized against the facility it backs up.
   backup_generator_mw: 2.0
   backup_generator_mvar: 1.6
-  carbon_intensity_max: 1.20
-  dc_carbon_cap: 0.62
+  # Upper bound for every carbon-intensity variable, and therefore the bound the
+  # McCormick envelopes are built on. It must cover the dirtiest source that can
+  # end up inside storage: the backup generator at 0.72 tCO2/MWh (the grid peaks
+  # at 0.409 on this dataset). Setting it below 0.72 would cut off legal
+  # dispatches; 0.75 is the floor with a margin.
+  #
+  # Was 1.20, which is 60% above anything physical, and that slack propagated
+  # straight into a weak LP bound. Measured on the 16-scenario evaluation set at
+  # dc_carbon_cap 0.30:
+  #   1.20 -> gap 1.25e-03, 922 s, stopped on the time limit, value 5,089
+  #   0.75 -> gap 9.91e-04, 259 s, optimal,                    value 3,403
+  # so the old run was both unconverged and 50% high. At a non-binding cap both
+  # settings return the identical solution, which is what shows 0.75 cuts off
+  # nothing.
+  carbon_intensity_max: 0.75
+  # The carbon target the facility is held to, in tCO2/MWh of delivered power.
+  # Measured storage value on the 16-scenario evaluation set, all converged:
+  #   0.62 ->      0   installs nothing; the cap never binds (grid peaks at 0.409)
+  #   0.30 ->  3,403   0.367 MW / 1.449 MWh, carbon cost cut 37%
+  #   0.26 ->  5,278   1.692 MWh
+  # A tighter target does NOT raise the value -- it raises the carbon bill on
+  # both sides of the comparison, so the difference shrinks -- but it does widen
+  # the gap between scenarios, which is what the selection problem needs. K=1
+  # headroom probe, ten random draws plus the three deterministic rules:
+  #   cap    mean     sd   sd/mean   worst    best   rules below zero
+  #   0.26  3,680    663      18%    2,222   4,584   0
+  #   0.22  2,961    855      29%      862   3,948   0
+  #   0.18    400    850     213%   -1,491   1,400   4
+  # 0.22 balances the two. At 0.26 random selection is reliable enough (18%)
+  # that a learned selector has little left to improve. At 0.18 the mean
+  # collapses and storage stops being reliably worth building at all, which is
+  # the degenerate regime this whole setup exists to escape -- its 213% spread
+  # is an artifact of a near-zero mean, not a usable signal, and reading sd/mean
+  # without also requiring a comfortably positive mean would have hidden that.
+  dc_carbon_cap: 0.22
   other_bus_carbon_cap: 1.10
-  # Keep charging-hour carbon vintages in the 48 h planning and DFL solves.
-  # McCormick envelopes retain the layered formulation without the nonconvex
-  # bilinear equalities used by the exact verification model.
-  carbon_formulation: mccormick
+  # system_average, not mccormick. The per-bus formulation applies the cap to
+  # nodal_carbon, which McCormick bounds only as
+  # incoming_carbon / incoming_power_upper; the envelope's lower bound goes
+  # negative whenever a flow sits below its own bound, so a line may carry zero
+  # carbon and any cap is satisfiable. Measured: with mccormick the objective is
+  # bit-identical at every cap from 0.62 down to 0.05, i.e. the carbon target
+  # never affected a single decision. Three rounds of tightening the envelope
+  # bounds did not change that -- it is structural, not a tuning problem.
+  #
+  # system_average applies the cap to the system intensity, which is linear and
+  # needs no envelope, so it binds exactly. Storage carbon vintages are still
+  # tracked (aggregate_discharge_carbon enters system_carbon), so the layered
+  # accounting this project is about is retained; only the level at which the
+  # target is imposed changes. At a non-binding cap both formulations return the
+  # same objective, which is what makes the switch safe.
+  carbon_formulation: system_average
   flow_limit_formulation: polygon
   # A solve that stops on the time limit never reaches solver_relative_gap,
   # which puts the ranking back inside solver noise and defeats the point of
@@ -211,12 +277,17 @@ planning:
   # 2.9x those. Precision below that is unused and expensive -- a solve reaches
   # 0.20% at 90 s and then spends ~200 s in the root cut loop to reach 0.05%.
   solver_relative_gap: 0.001
-  # Two, not four. The solve never branches -- the log shows it still on node 0
-  # at 141 s -- so the branch-and-bound tree that extra threads would search does
-  # not exist here. The root LP dominates, and Gurobi's concurrent optimizer
-  # splits the budget across primal simplex, dual simplex and barrier, handing
-  # barrier only 2 of 4 anyway. Threads are worth more as concurrent solves.
-  solver_threads: 2
+  # Four, measured on this machine (Ryzen 5 5600X, 6 physical / 12 logical) with
+  # Gurobi 13 on the K=1 planning solve, everything else held fixed:
+  #   1 thread 18.37 s | 2 threads 14.06 s | 4 threads 7.27 s | 6 threads 7.43 s
+  # Four is 1.93x two and the curve is flat past it, so four.
+  # The previous value was 2, reasoned as "the solve never branches -- the log
+  # shows it still on node 0 at 141 s -- so the tree extra threads would search
+  # does not exist". That evidence came from a SCIP log and does not survive the
+  # move to Gurobi: at 2 threads Gurobi explores 9 nodes, at 4 it explores 1 and
+  # closes the gap at the root. The extra threads accelerate the root cut loop,
+  # which is precisely the part that dominates -- they are not tree search.
+  solver_threads: 4
   # Search strategy. These reorder SCIP's search without changing the model, so
   # a solution found this way is exactly as valid; only the effort spent proving
   # optimality shifts. Decision-focused training ranks samples by their incumbent
@@ -224,19 +295,42 @@ planning:
   solver_emphasis: feasibility
   solver_aggressive_heuristics: true
   # Samples within one DFL epoch are independent and each already solves in its
-  # own process, so this is the main lever on wall-clock time. Matched to
-  # policy_samples_per_epoch so an epoch's planning solves fit one wave instead
-  # of two; at solver_threads 2 that is 16 threads, the machine's physical core
-  # count.
-  solver_max_parallel_workers: 8
+  # own process, so this is the main lever on wall-clock time.
+  # Three, and memory is what caps it, not cores. The solve DFL runs
+  # concurrently is the fixed-design validation solve over
+  # validation_batch_size scenarios; measured peak RSS for one of those is
+  # 2,885 MB (see solver_memory_limit_mb). On this machine's 15.9 GB:
+  #   8 workers -> 22.5 GB  (the previous value: it pages, and that paging is
+  #                          the single largest cost in a run)
+  #   4 workers -> 11.3 GB
+  #   3 workers ->  8.5 GB  <- fits with room for the parent, torch and CUDA
+  # The previous 8 was matched to policy_samples_per_epoch and justified as
+  # "at solver_threads 2 that is 16 threads, the machine's physical core count",
+  # which describes a 16-core / 32 GB machine, not this 6-core / 16 GB one.
+  # At solver_threads 4 this is 12 threads, exactly the logical processor count.
+  # Note 8 policy samples over 3 workers leaves the last wave part-empty; drop
+  # policy_samples_per_epoch to 6 for two full waves if that shows up as idle
+  # time. Paging is far more expensive than a part-empty wave, so this ordering
+  # is deliberate.
+  solver_max_parallel_workers: 3
   # Per-solve budget. Concurrency multiplies it, so keep
   # workers x memory below usable RAM. Exceeding it yields a 'memorylimit'
   # status with the incumbent kept, rather than an aborted process.
-  # 8 x 3500 = 28 GB of a 32 GB machine. Estimated, not measured: the solver log
-  # puts the barrier factor alone at 600 MB and the rest was never profiled. If
-  # 'memlimit' appears in a run, halve the workers and double this rather than
-  # raising it alone.
-  solver_memory_limit_mb: 3500
+  # Measured on this machine, peak RSS of a single worker process:
+  #   planning,   1 scenario           :   987 MB
+  #   validation, 16 scenarios, fixed  : 2,885 MB  <- the one run concurrently
+  #   planning,   16 scenarios, free   : 4,093 MB  <- overran the old 3,500 and
+  #                                                   returned memlimit ALONE,
+  #                                                   with no other worker running
+  # 3 x 3200 = 9.6 GB of 15.9 GB. The floor is set by the 2,885 MB validation
+  # solve: below roughly 3,000 every one of them returns memlimit, which is how
+  # the three memlimit rows in outputs/k_sweep_k1358_cvae got there.
+  # The previous 3,500 was sized as "8 x 3500 = 28 GB of a 32 GB machine" and
+  # labelled "Estimated, not measured" -- both the estimate and the machine were
+  # wrong for this box. A free-design solve over many scenarios (the K=8 sweep
+  # rows, or the perfect-information solve) needs 5,000+ and should be run at
+  # workers 1 rather than by raising this for everything.
+  solver_memory_limit_mb: 3200
   # Note this shows nothing during a DFL run: planning solves happen in isolated
   # workers whose stdout _run_worker captures and discards unless they fail. Use
   # scripts/solver_log_probe.py to see a solver log; it stays in-process.
@@ -266,7 +360,26 @@ costs:
   delay_dollars_per_task_hour: 24.0
   curtailment_dollars_per_mwh: 4.0
   shedding_dollars_per_mwh: 10000.0
+  # Superseded by carbon_price_dollars_per_t below, which takes precedence
+  # whenever it is positive. Kept so runs that predate the priced formulation
+  # still load and reproduce.
   validation_carbon_slack_dollars: 300000.0
+  # Price on carbon emitted beyond dc_carbon_cap, in dollars per tonne. This is
+  # the US social cost of carbon; traded credits would put it at 50-100 instead,
+  # and the choice is worth stating in the paper because the storage value scales
+  # with it.
+  #
+  # It replaces a hard cap backed by validation_carbon_slack_dollars, where
+  # exceeding the target cost a DIMENSIONLESS slack scaled by a big-M -- so the
+  # implied price per tonne moved with that bound rather than with anything real.
+  # The consequence was measurable: storage value jumped from 82,652 at
+  # dc_carbon_cap 0.30 to 7,238,309 at 0.22, essentially all of it avoided
+  # penalty, with no cap in between where the target binds and compliance is
+  # still reachable. Pricing the excess directly removes the cliff -- 81,407 ->
+  # 95,099 -> 143,448 -> 162,398 across the same caps -- and gives the number
+  # physical units, because storage now trades off against a real cost per tonne
+  # instead of against an arbitrage of the big-M.
+  carbon_price_dollars_per_t: 185.0
 
 # Keep the T2 checkpoints and evaluation reports separate from K3T1.
 output_dir: outputs/generator_comparison_k1t2_48h
