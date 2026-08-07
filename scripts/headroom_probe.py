@@ -218,6 +218,11 @@ def main() -> None:
         value = ref - float(oos.objective)
         installed = list(design.design.installed_buses)
         summary = _scenario_set_summary(scenarios, weights)
+        # A solve that stopped on the time limit returns an unproven incumbent,
+        # and at solver_relative_gap 1e-4 that is a live possibility. Without
+        # this the row prints exactly like a converged one and lands in the mean
+        # and the sd unmarked, which is how a value 50% off got believed once.
+        converged = design.status == "optimal" and oos.status == "optimal"
         rows.append({
             "rule": rule, "seed": seed, "storage_value": value,
             "installed": installed,
@@ -225,9 +230,15 @@ def main() -> None:
             "support": list(labels),
             "peak_net_mw": summary["weighted_peak_net_load_mw"],
             "price_spread": summary["weighted_price_spread_per_mwh"],
+            "planning_status": design.status,
+            "evaluation_status": oos.status,
+            "converged": converged,
         })
+        mark = "" if converged else (f"   <-- NOT CONVERGED plan={design.status} "
+                                     f"eval={oos.status}")
         print(f"  {rule:<10} seed={seed}  value {value:>9,.0f}  "
-              f"E={rows[-1]['energy_mwh']:.3f}  {labels[0] if labels else ''}", flush=True)
+              f"E={rows[-1]['energy_mwh']:.3f}  {labels[0] if labels else ''}{mark}",
+              flush=True)
 
     values = [r["storage_value"] for r in rows if r["rule"] == "random"]
     best_seen = max((r["storage_value"] for r in rows), default=0.0)
@@ -253,6 +264,15 @@ def main() -> None:
     print(f"\n{'=' * 62}")
     print(f"regime {args.regime or '(all)'}  k={args.k}")
     print(f"{'=' * 62}")
+    unconverged = [r for r in rows if not r.get("converged", True)]
+    if unconverged:
+        print(f"WARNING: {len(unconverged)} of {len(rows)} rows did not converge; "
+              "their values are unproven incumbents and the mean and sd below "
+              "include them:")
+        for r in unconverged:
+            print(f"  {r['rule']:<10} seed={r['seed']}  "
+                  f"plan={r['planning_status']} eval={r['evaluation_status']}")
+        print()
     if ceiling_lo is None:
         print("storage-value ceiling : not computed (--skip-ceiling)")
         print(f"best rule seen        : {best_seen:,.0f}")
