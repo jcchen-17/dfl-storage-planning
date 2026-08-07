@@ -42,8 +42,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default="configs/generator_compare_k1t2.yaml")
-    ap.add_argument("--regime", default="price_1p0x",
-                    help="scenario suffix to keep; 1p0x is the un-augmented data")
+    # Same reasoning as headroom_probe: the whole pool by default. The suffix
+    # only selects anything on the _price_regimes expansion, and defaulting to
+    # one forced the ordinary call to pass an empty string, which PowerShell
+    # drops before argparse sees it.
+    ap.add_argument("--regime", default="",
+                    help="scenario suffix to keep, e.g. price_1p0x on the "
+                         "augmented dataset; default keeps the whole pool")
     ap.add_argument("--caps", type=float, nargs="+",
                     default=[0.40, 0.35, 0.30, 0.26, 0.22])
     ap.add_argument("--threads", type=int, default=4)

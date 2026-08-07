@@ -12,13 +12,14 @@ demonstrate anything. Three numbers decide that, and all three are measurable:
   headroom  -- ceiling minus the random MEAN. That, not the gap to random's best
                draw, is what a learned selector can actually capture.
 
-``--regime`` restricts the pool by scenario-name suffix. ``price_1p0x`` selects
-the un-augmented scenarios: augment_price_regimes.py builds every other regime by
-scaling the spread of these around their own mean, so 1p0x is what the dataset
-looked like before the synthetic price uncertainty was added.
+The whole pool by default. ``--regime`` narrows it by scenario-name suffix,
+which only selects anything on the _price_regimes expansion: there,
+``price_1p0x`` picks the windows as they were before augment_price_regimes.py
+scaled each one's price spread into five synthetic tariff regimes.
 
-    python scripts/headroom_probe.py --regime price_1p0x
-    python scripts/headroom_probe.py --regime "" --tag augmented
+    python scripts/headroom_probe.py
+    python scripts/headroom_probe.py --skip-ceiling --time-limit 600
+    python scripts/headroom_probe.py --carbon-cap 0.18 --tag cap018
 """
 
 from __future__ import annotations
@@ -92,8 +93,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default="configs/generator_compare_k1t2.yaml")
-    ap.add_argument("--regime", default="price_1p0x",
-                    help="scenario-name suffix to keep; empty string keeps all")
+    # Defaults to the whole pool. The suffix filter only means anything against
+    # the _price_regimes expansion, whose names end in price_1p0x and friends;
+    # the un-augmented windows carry no suffix, so filtering them is a no-op at
+    # best and an empty pool at worst. Leaving the default as a suffix also made
+    # the common invocation require passing an empty string, which PowerShell
+    # drops before argparse ever sees it.
+    ap.add_argument("--regime", default="",
+                    help="scenario-name suffix to keep, e.g. price_1p0x on the "
+                         "augmented dataset; default keeps the whole pool")
     ap.add_argument("--k", type=int, default=1)
     ap.add_argument("--seeds", type=int, default=10)
     ap.add_argument("--threads", type=int, default=4)
