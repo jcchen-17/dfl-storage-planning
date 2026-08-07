@@ -1,5 +1,5 @@
 """Check the freshly trained generator matches the dataset it will be used on."""
-import sys, os, json
+import sys, os
 sys.path.insert(0, "src")
 os.environ.setdefault("STORAGE_DFL_SOLVER_WORKER", "1")
 import torch
@@ -37,9 +37,32 @@ print(f"{c.generator.kind}.pt round trip : latent {tuple(latent.shape)}"
 
 rebuilt = codec.decode_batch(decoded, ctx[:4], name_prefix="probe")
 import numpy as np
+
+# Storage value comes from the carbon target now, not from price arbitrage, so
+# the carbon channel and the net load that drives it are what reconstruction
+# quality has to be judged on. Price spread is close to a constant here (one
+# value on weekdays, zero at weekends) and barely enters the decision.
+def _peak_net(s):
+    load = s.active_load_mw.sum(axis=(1, 2))
+    pv = s.pv_available_mw.sum(axis=(1, 2))
+    return float((load - pv).max())
+
+
+print(f"\n{'scenario':<18}{'channel':<16}{'real':>9}{'recon':>9}{'error':>9}")
+print("-" * 62)
 for i, s in enumerate(rebuilt):
     real = pool.scenarios[i]
-    print(f"  {real.name:<18} price spread real {float(np.ptp(real.grid_price_per_mwh)):7.2f}"
-          f"  reconstructed {float(np.ptp(s.grid_price_per_mwh)):7.2f}"
-          f"   | peak load real {float(real.active_load_mw.sum(axis=(1,2)).max()):5.3f}"
-          f"  recon {float(s.active_load_mw.sum(axis=(1,2)).max()):5.3f}")
+    rows = [
+        ("carbon mean", float(real.grid_carbon_t_per_mwh.mean()),
+         float(s.grid_carbon_t_per_mwh.mean())),
+        ("carbon swing", float(np.ptp(real.grid_carbon_t_per_mwh)),
+         float(np.ptp(s.grid_carbon_t_per_mwh))),
+        ("peak net load", _peak_net(real), _peak_net(s)),
+        ("price spread", float(np.ptp(real.grid_price_per_mwh)),
+         float(np.ptp(s.grid_price_per_mwh))),
+    ]
+    for j, (name, a, b) in enumerate(rows):
+        err = f"{100 * (b - a) / a:+.0f}%" if a else "n/a"
+        label = real.name if j == 0 else ""
+        print(f"{label:<18}{name:<16}{a:>9.3f}{b:>9.3f}{err:>9}")
+    print()
