@@ -21,6 +21,7 @@ from storage_dfl.data import (
 from storage_dfl.dfl import (
     DirectSupportPolicy,
     resolve_device,
+    support_init_indices,
     train_direct_generator,
     train_scenario_bo,
 )
@@ -357,9 +358,15 @@ def train_dfl_stage(
             support_source_names = list(result.support_source_names)
         elif config.dfl.method == "reinforce":
             validation_trajectories, validation_contexts = codec.encode_pool(observed_pool)
-            support_indices = codec.support_indices(
+            # Only the policy's starting point. codec.support_indices still picks
+            # the fixed validation subset and the reported test subset, so those
+            # stay put and results remain comparable across support_init_rule.
+            support_indices = support_init_indices(
+                config.dfl.support_init_rule,
                 observed_pool,
+                codec,
                 config.dfl.num_support_scenarios,
+                seed=config.seed,
             )
             support_source_names = observed_pool.names(support_indices.tolist())
             support_conditions = torch.as_tensor(
@@ -432,6 +439,10 @@ def train_dfl_stage(
         "method": config.dfl.method,
         "generator": config.generator.kind,
         "epochs": len(result.history),
+        # Both of these move the starting point, so a run is only reproducible
+        # and only comparable to another run when they are recorded alongside it.
+        "support_init_rule": config.dfl.support_init_rule,
+        "seed": config.seed,
         "scenario_weights": list(result.scenario_weights),
         "support_source_names": checkpoint["support_source_names"],
         "planning": result.planning_result.to_dict(),
