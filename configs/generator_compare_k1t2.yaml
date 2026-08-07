@@ -1,10 +1,10 @@
 ﻿# K=3, T2 storage-economics sensitivity.
 #
-# This keeps the K1T2 network, three-times data-center load, existing 2 MW
+# This keeps the K3T1 network, three-times data-center load, existing 2 MW
 # backup generator, storage bounds and carbon constraints unchanged. T2 only
 # tests a plausible low-cost BESS / high-demand-charge commercial case; storage
 # remains optional and is never forced into the solution.
-seed: 7
+seed: 0
 
 data:
   dataset_path: data/processed/ieee13_smartds_dfl/dfl_training_windows_48h_price_regimes.npz
@@ -78,7 +78,7 @@ dfl:
   # set instead (ScenarioCodec.support_indices). The planning model grows
   # linearly in K, so this is also the main lever on solve time.
   num_support_scenarios: 1
-  epochs: 40
+  epochs: 50
   # These two are priced very differently and should not move together.
   # validation_batch_size is solved once per sample, so 8 x 50 = 400 times, and
   # those solves run concurrently across solver_max_parallel_workers. The model
@@ -107,8 +107,11 @@ dfl:
   learning_rate: 0.03
   baseline_momentum: 0.75
   initial_exploration_std: 0.80
-  minimum_exploration_std: 0.15
-  exploration_decay: 0.92
+  # Keep broad exploration early, then allow a quieter fine-tuning phase. The
+  # previous 0.92 schedule hit its 0.15 floor at epoch 21 and therefore injected
+  # the same visible sampling noise throughout the second half of training.
+  minimum_exploration_std: 0.10
+  exploration_decay: 0.94
   diversity_margin: 0.80
   diversity_weight: 0.05
   weight_entropy_weight: 0.005
@@ -129,10 +132,19 @@ dfl:
   bo_exploration: 1.5
   bo_weight_floor: 0.02
   bo_finalists: 2
-  # Must track solver_relative_gap: a deadband wider than the differences being
-  # ranked discards the whole signal. At 0.005 it spanned 7,650 while the run's
-  # entire spread was 1,154.
-  decision_deadband_relative: 0.0005
+  # Keep several engineering-distinct REINFORCE designs and compare all of
+  # them once on the same final validation set. This is model selection on the
+  # validation split only; the test split remains sealed until evaluate.py.
+  reinforce_finalists: 4
+  # Match the requested MIP gap. Differences smaller than this are not reliably
+  # ordered by the solver and must be ties, otherwise REINFORCE learns numerical
+  # noise. The finalist tie-break then prefers the cheaper/smaller design.
+  decision_deadband_relative: 0.001
+  # Stop only after the decision loss has failed to improve by more than the
+  # solver-resolution deadband for ten epochs. This is decision convergence,
+  # not the visual flatness of a noisy REINFORCE curve.
+  early_stopping_min_epochs: 50
+  early_stopping_patience: 10
   device: auto
 
 data_center:
@@ -258,5 +270,3 @@ costs:
 
 # Keep the T2 checkpoints and evaluation reports separate from K3T1.
 output_dir: outputs/generator_comparison_k1t2_48h
-
-
