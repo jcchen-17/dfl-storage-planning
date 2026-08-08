@@ -11,6 +11,7 @@ from storage_dfl.config import DFLConfig
 from storage_dfl.data import Scenario, ScenarioCodec, ScenarioPool
 from storage_dfl.models import ConditionalGenerator
 from storage_dfl.planning import PlanningResult, StoragePlanningOracle
+from storage_dfl.dfl.selection import select_scenarios
 
 from .trainer import INFEASIBLE_LOSS, resolve_device
 
@@ -178,9 +179,13 @@ def _representative_scenarios(
     codec: ScenarioCodec,
     pool: ScenarioPool,
     count: int,
-) -> tuple[Scenario, ...]:
-    indices = codec.support_indices(pool, min(count, len(pool.scenarios)))
-    return pool.subset(indices.tolist())
+    rule: str = "farthest",
+    seed: int = 0,
+) -> tuple[tuple[Scenario, ...], tuple[float, ...]]:
+    scenarios, weights, _ = select_scenarios(
+        rule, pool, codec, min(count, len(pool.scenarios)), seed=seed
+    )
+    return scenarios, weights
 
 
 @torch.no_grad()
@@ -248,11 +253,19 @@ def train_scenario_bo(
         device,
     )
     features = scenario_features(pool)
-    fixed_validation = _representative_scenarios(
-        codec, observed_pool, config.validation_batch_size
+    fixed_validation, fixed_validation_weights = _representative_scenarios(
+        codec,
+        observed_pool,
+        config.validation_batch_size,
+        config.evaluation_selection_rule,
+        seed,
     )
-    final_validation = _representative_scenarios(
-        codec, observed_pool, config.final_validation_size
+    final_validation, final_validation_weights = _representative_scenarios(
+        codec,
+        observed_pool,
+        config.final_validation_size,
+        config.evaluation_selection_rule,
+        seed,
     )
     total_evaluations = config.bo_initial_evaluations + config.bo_iterations
     initial = _initial_parameters(
@@ -348,6 +361,7 @@ def train_scenario_bo(
         validation = (
             oracle.solve(
                 fixed_validation,
+                weights=fixed_validation_weights,
                 fixed_design=plan.design,
                 allow_carbon_slack=True,
                 use_cache=True,
@@ -458,6 +472,7 @@ def train_scenario_bo(
         plan = evaluation_payloads[index][4]
         full_validation = oracle.solve(
             final_validation,
+            weights=final_validation_weights,
             fixed_design=plan.design,
             allow_carbon_slack=True,
             use_cache=True,

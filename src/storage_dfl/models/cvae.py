@@ -121,6 +121,7 @@ def train_cvae(
                 "net_load",
                 "net_peak",
                 "price_spread",
+                "carbon_spread",
             )
         }
         effective_beta = config.beta * min(
@@ -150,6 +151,9 @@ def train_cvae(
             net_load_loss, net_peak_loss, price_spread_loss = shape.paired_losses(
                 reconstructed_time, observed_time
             )
+            carbon_spread_loss = shape.carbon_spread_loss(
+                reconstructed_time, observed_time
+            )
             kl_loss = -0.5 * torch.mean(
                 1.0 + log_variance - latent_mean.square() - log_variance.exp()
             )
@@ -159,6 +163,7 @@ def train_cvae(
                 + config.net_load_weight * net_load_loss
                 + config.net_peak_weight * net_peak_loss
                 + config.price_spread_weight * price_spread_loss
+                + config.carbon_spread_weight * carbon_spread_loss
                 + effective_beta * kl_loss
             )
             loss.backward()
@@ -173,6 +178,7 @@ def train_cvae(
                 ("net_load", net_load_loss),
                 ("net_peak", net_peak_loss),
                 ("price_spread", price_spread_loss),
+                ("carbon_spread", carbon_spread_loss),
             ):
                 totals[name] += weight * float(value.detach().cpu())
 
@@ -188,6 +194,7 @@ def train_cvae(
                 f"reconstruction={totals['reconstruction']:.6f}, "
                 f"net_peak={totals['net_peak']:.6f}, "
                 f"price_spread={totals['price_spread']:.6f}, "
+                f"carbon_spread={totals['carbon_spread']:.6f}, "
                 f"beta={effective_beta:.6g}",
                 flush=True,
             )

@@ -66,3 +66,57 @@ for i, s in enumerate(rebuilt):
         label = real.name if j == 0 else ""
         print(f"{label:<18}{name:<16}{a:>9.3f}{b:>9.3f}{err:>9}")
     print()
+
+
+# The four examples above are useful diagnostics, but acceptance must use the
+# complete split. Decode posterior means in batches and summarize absolute
+# relative errors. Zero price spreads are checked separately.
+decoded_batches = []
+with torch.no_grad():
+    for start in range(0, len(pool.scenarios), 32):
+        stop = min(start + 32, len(pool.scenarios))
+        batch_t = torch.as_tensor(traj[start:stop], dtype=torch.float32, device=device)
+        batch_c = torch.as_tensor(ctx[start:stop], dtype=torch.float32, device=device)
+        batch_latent, _ = gen.encode(batch_t, batch_c)
+        decoded_batches.append(gen.decode(batch_latent, batch_c).cpu().numpy())
+
+decoded_all = np.concatenate(decoded_batches, axis=0)
+rebuilt_all = codec.decode_batch(decoded_all, ctx, name_prefix="audit")
+
+
+def _metrics(s):
+    return np.asarray(
+        [
+            float(s.grid_carbon_t_per_mwh.mean()),
+            float(np.ptp(s.grid_carbon_t_per_mwh)),
+            _peak_net(s),
+            float(np.ptp(s.grid_price_per_mwh)),
+        ],
+        dtype=float,
+    )
+
+
+labels = ("carbon mean", "carbon swing", "peak net load", "price spread")
+real_values = np.stack([_metrics(s) for s in pool.scenarios])
+recon_values = np.stack([_metrics(s) for s in rebuilt_all])
+print(f"all-scenario posterior-mean audit ({len(pool.scenarios)} scenarios)")
+print(f"{'channel':<16}{'median |err|':>15}{'p90 |err|':>13}{'max |err|':>13}")
+print("-" * 57)
+for column, label in enumerate(labels):
+    nonzero = np.abs(real_values[:, column]) > 1.0e-9
+    relative = 100.0 * np.abs(
+        (recon_values[nonzero, column] - real_values[nonzero, column])
+        / real_values[nonzero, column]
+    )
+    print(
+        f"{label:<16}{np.median(relative):>14.1f}%"
+        f"{np.quantile(relative, 0.90):>12.1f}%{relative.max():>12.1f}%"
+    )
+
+flat_price = np.abs(real_values[:, 3]) <= 1.0e-9
+if flat_price.any():
+    reconstructed_flat_spread = recon_values[flat_price, 3]
+    print(
+        f"flat-price cases : {int(flat_price.sum())}; "
+        f"maximum reconstructed spread {reconstructed_flat_spread.max():.6f}"
+    )

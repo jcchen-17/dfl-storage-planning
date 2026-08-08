@@ -19,6 +19,15 @@ class ScenarioCodec:
     context_mean: np.ndarray
     context_std: np.ndarray
     context_anchors: np.ndarray
+    # Optional trajectory fixed by the dataset construction rule. It remains in
+    # the packed vector for checkpoint compatibility, but decoded samples cannot
+    # alter it and a policy therefore cannot exploit a meaningless channel.
+    workload_template: np.ndarray | None = None
+    # Some tariffs are deterministic from the scenario context. In dataset v2,
+    # weekend_fraction == 1 means both days are off-peak and the 48-hour price
+    # curve is exactly flat. Preserve that rule instead of allowing a latent
+    # policy to manufacture arbitrage value in a deterministic channel.
+    full_weekend_price_template: np.ndarray | None = None
 
     @staticmethod
     def _farthest_point_indices(features: np.ndarray, count: int) -> np.ndarray:
@@ -48,6 +57,24 @@ class ScenarioCodec:
         context_mean = contexts.mean(axis=0)
         context_std = np.maximum(contexts.std(axis=0), 1.0e-4)
         normalized_contexts = (contexts - context_mean) / context_std
+        workloads = np.stack(
+            [scenario.workload_arrival for scenario in pool.scenarios]
+        )
+        workload_template = (
+            workloads[0].astype(np.float32)
+            if np.allclose(workloads, workloads[0], rtol=0.0, atol=1.0e-6)
+            else None
+        )
+        full_weekend_price_template = None
+        if contexts.shape[1] >= 3:
+            full_weekend = np.isclose(contexts[:, 2], 1.0, atol=1.0e-6)
+            weekend_prices = np.stack(
+                [scenario.grid_price_per_mwh for scenario in pool.scenarios]
+            )[full_weekend]
+            if weekend_prices.size and np.allclose(
+                weekend_prices, weekend_prices[0], rtol=0.0, atol=1.0e-6
+            ):
+                full_weekend_price_template = weekend_prices[0].astype(np.float32)
         anchor_indices = cls._farthest_point_indices(
             normalized_contexts,
             min(16, len(pool.scenarios)),
@@ -60,12 +87,14 @@ class ScenarioCodec:
             context_mean=context_mean,
             context_std=context_std,
             context_anchors=normalized_contexts[anchor_indices].astype(np.float32),
+            workload_template=workload_template,
+            full_weekend_price_template=full_weekend_price_template,
         )
 
     @classmethod
     def from_normalization_dict(cls, payload: dict, feeder: Feeder) -> "ScenarioCodec":
         layout_version = int(payload.get("layout_version", 0))
-        if layout_version not in {2, 3}:
+        if layout_version not in {2, 3, 4, 5}:
             raise ValueError(
                 "Normalization layout is not a supported phase-resolved format; retrain the CVAE."
             )
@@ -80,6 +109,16 @@ class ScenarioCodec:
                 payload.get("context_anchors", []),
                 dtype=np.float32,
             ).reshape(-1, len(payload["context_mean"])),
+            workload_template=(
+                np.asarray(payload["workload_template"], dtype=np.float32)
+                if payload.get("workload_template") is not None
+                else None
+            ),
+            full_weekend_price_template=(
+                np.asarray(payload["full_weekend_price_template"], dtype=np.float32)
+                if payload.get("full_weekend_price_template") is not None
+                else None
+            ),
         )
 
     @staticmethod
@@ -151,6 +190,14 @@ class ScenarioCodec:
         workload, pue, price, carbon = (
             matrix[:, 3 * field_size + index] for index in range(4)
         )
+        if self.workload_template is not None:
+            workload = self.workload_template
+        if (
+            self.full_weekend_price_template is not None
+            and context.size >= 3
+            and context[2] >= 1.0 - 1.0e-5
+        ):
+            price = self.full_weekend_price_template
 
         active_limit = 2.0 * self.feeder.base_active_load_mw + 0.05
         reactive_limit = 2.0 * self.feeder.base_reactive_load_mvar + 0.05
@@ -229,7 +276,7 @@ class ScenarioCodec:
 
     def normalization_dict(self) -> dict[str, object]:
         return {
-            "layout_version": 3,
+            "layout_version": 5,
             "layout": "time-major:[P_bus_phase,Q_bus_phase,PV_bus_phase,workload,pue,price,carbon]",
             "horizon": self.horizon,
             "trajectory_mean": self.trajectory_mean.tolist(),
@@ -237,4 +284,14 @@ class ScenarioCodec:
             "context_mean": self.context_mean.tolist(),
             "context_std": self.context_std.tolist(),
             "context_anchors": self.context_anchors.tolist(),
+            "workload_template": (
+                self.workload_template.tolist()
+                if self.workload_template is not None
+                else None
+            ),
+            "full_weekend_price_template": (
+                self.full_weekend_price_template.tolist()
+                if self.full_weekend_price_template is not None
+                else None
+            ),
         }

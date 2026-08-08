@@ -22,6 +22,7 @@ from storage_dfl.dfl import (
     DirectSupportPolicy,
     resolve_device,
     support_init_indices,
+    select_scenarios,
     train_direct_generator,
     train_scenario_bo,
 )
@@ -34,7 +35,12 @@ from storage_dfl.models import (
     train_generator,
 )
 from storage_dfl.network import Feeder, ieee13_unbalanced_microgrid
-from storage_dfl.planning import StoragePlanningOracle
+from storage_dfl.planning import (
+    PlanningJob,
+    PlanningResult,
+    StorageDesign,
+    StoragePlanningOracle,
+)
 
 
 @dataclass(frozen=True)
@@ -307,7 +313,12 @@ def _method_tag(config: ExperimentConfig) -> str:
     """
 
     kind = config.generator.kind
-    return config.dfl.method if kind == "cvae" else f"{kind}_{config.dfl.method}"
+    base = config.dfl.method if kind == "cvae" else f"{kind}_{config.dfl.method}"
+    scale = float(config.costs.battery_capex_scale)
+    if abs(scale - 1.0) <= 1.0e-12:
+        return base
+    scale_tag = f"{100.0 * scale:g}".replace(".", "p")
+    return f"{base}_capex{scale_tag}"
 
 
 def train_dfl_stage(
@@ -316,8 +327,18 @@ def train_dfl_stage(
     tensorboard: bool = True,
     method_override: str | None = None,
     generator_override: str | None = None,
+    battery_capex_scale: float | None = None,
 ) -> dict:
     config = _apply_generator_override(load_config(config_path), generator_override)
+    if battery_capex_scale is not None:
+        if battery_capex_scale <= 0.0:
+            raise ValueError("battery_capex_scale must be positive.")
+        config = replace(
+            config,
+            costs=replace(
+                config.costs, battery_capex_scale=float(battery_capex_scale)
+            ),
+        )
     if method_override is not None:
         if method_override not in {"reinforce", "scenario_bo"}:
             raise ValueError("method_override must be 'reinforce' or 'scenario_bo'.")
@@ -461,6 +482,12 @@ def train_dfl_stage(
         # Which tolerance the loop actually ran at. Two runs at different values
         # searched different landscapes even with everything else identical.
         "training_relative_gap": float(training_planning.solver_relative_gap),
+        "training_validation_relative_gap": float(
+            config.dfl.validation_relative_gap
+            if config.dfl.validation_relative_gap > 0.0
+            else training_planning.solver_relative_gap
+        ),
+        "battery_capex_scale": float(config.costs.battery_capex_scale),
         "scenario_weights": list(result.scenario_weights),
         "support_source_names": checkpoint["support_source_names"],
         "planning": result.planning_result.to_dict(),
@@ -544,15 +571,111 @@ def _scenario_set_summary(
     }
 
 
-def _bounded_result(result) -> bool:
+def _bounded_result(result, accepted_relative_gap: float | None = None) -> bool:
     """Whether an objective is comparable rather than just a finite incumbent."""
 
-    return (
+    base = (
         result.feasible
-        and result.status in {"optimal", "gaplimit"}
         and isfinite(result.objective)
         and isfinite(result.relative_gap)
     )
+    if not base:
+        return False
+    if result.status in {"optimal", "gaplimit"}:
+        return True
+    return (
+        accepted_relative_gap is not None
+        and accepted_relative_gap > 0.0
+        and result.relative_gap <= accepted_relative_gap
+    )
+
+
+def _aggregate_scenario_wise_results(
+    results: list[PlanningResult],
+    weights: tuple[float, ...],
+    design,
+    demand_dollars_per_mw_year: float,
+    accepted_relative_gap: float,
+) -> PlanningResult:
+    """Reconstruct the fixed-design multi-scenario objective from small solves.
+
+    Investment is paid once. Interval operating and carbon costs are expected
+    values, while the original joint model uses one peak variable shared by all
+    scenarios, so annual demand cost is based on the maximum scenario peak.
+    """
+
+    normalized = np.asarray(weights, dtype=float)
+    normalized /= normalized.sum()
+    names = tuple(name for result in results for name in result.scenario_names)
+    if not results or any(not result.feasible for result in results):
+        return PlanningResult(
+            status="infeasible",
+            objective=float("inf"),
+            investment_cost=float("inf"),
+            operating_cost=float("inf"),
+            carbon_slack_cost=float("inf"),
+            peak_grid_mw=float("inf"),
+            design=design,
+            scenario_names=names,
+            solve_time_seconds=sum(result.solve_time_seconds for result in results),
+            relative_gap=float("inf"),
+        )
+
+    peak = max(float(result.peak_grid_mw) for result in results)
+    non_demand_operating = sum(
+        float(weight)
+        * (
+            float(result.operating_cost)
+            - demand_dollars_per_mw_year * float(result.peak_grid_mw)
+        )
+        for weight, result in zip(normalized, results, strict=True)
+    )
+    operating = demand_dollars_per_mw_year * peak + non_demand_operating
+    carbon = sum(
+        float(weight) * float(result.carbon_slack_cost)
+        for weight, result in zip(normalized, results, strict=True)
+    )
+    investment = float(results[0].investment_cost)
+    bounded = all(
+        _bounded_result(result, accepted_relative_gap) for result in results
+    )
+    return PlanningResult(
+        status="optimal" if bounded else "scenario_limit",
+        objective=investment + operating + carbon,
+        investment_cost=investment,
+        operating_cost=operating,
+        carbon_slack_cost=carbon,
+        peak_grid_mw=peak,
+        design=design,
+        scenario_names=names,
+        # Sum is total solver effort across parallel workers, not wall time.
+        solve_time_seconds=sum(result.solve_time_seconds for result in results),
+        relative_gap=max(float(result.relative_gap) for result in results),
+    )
+
+
+def _solve_fixed_design_scenario_wise(
+    oracle: StoragePlanningOracle,
+    scenarios: tuple[Scenario, ...],
+    weights: tuple[float, ...],
+    design,
+    demand_dollars_per_mw_year: float,
+    accepted_relative_gap: float,
+) -> tuple[PlanningResult, list[PlanningResult], float]:
+    started = time.perf_counter()
+    results = oracle.solve_many(
+        [PlanningJob((scenario,), fixed_design=design) for scenario in scenarios],
+        allow_carbon_slack=True,
+    )
+    wall_seconds = time.perf_counter() - started
+    aggregate = _aggregate_scenario_wise_results(
+        results,
+        weights,
+        design,
+        demand_dollars_per_mw_year,
+        accepted_relative_gap,
+    )
+    return aggregate, results, wall_seconds
 
 
 @torch.no_grad()
@@ -592,11 +715,14 @@ def evaluate_stage(
     paths = ArtifactPaths(config.output_dir)
     feeder, observed_pool = _experiment_data(config, config.data.test_split)
     codec = _load_codec(paths, feeder)
-    evaluation_indices = codec.support_indices(
+    evaluation_scenarios, evaluation_weights, evaluation_names = select_scenarios(
+        config.dfl.evaluation_selection_rule,
         observed_pool,
+        codec,
         min(config.dfl.final_validation_size, len(observed_pool.scenarios)),
+        seed=config.seed,
     )
-    evaluation_pool = ScenarioPool(observed_pool.subset(evaluation_indices.tolist()))
+    evaluation_pool = ScenarioPool(evaluation_scenarios)
     device = resolve_device(config.dfl.device)
     cvae = load_generator(paths, config.generator.kind, device)
     checkpoint_path = paths.dfl_checkpoint_for(tag)
@@ -629,7 +755,11 @@ def evaluate_stage(
     oracle = StoragePlanningOracle(
         feeder, config.planning, config.costs, config.data, config.data_center
     )
-    planning = oracle.solve(generated, weights=weights)
+    planning = oracle.solve(
+        generated,
+        weights=weights,
+        allow_carbon_slack=config.dfl.training_allow_carbon_slack,
+    )
     if not planning.feasible:
         raise RuntimeError(
             f"Evaluation planning failed with status {planning.status!r} after "
@@ -637,6 +767,8 @@ def evaluate_stage(
         )
     training_design = checkpoint.get("selected_training_design")
     design_changed_on_replan = None
+    evaluation_design = planning.design
+    evaluated_design_source = "replanned_support"
     if training_design is not None:
         replanned_design = planning.to_dict()["design"]
         training_installed = {
@@ -656,6 +788,18 @@ def evaluate_stage(
         design_changed_on_replan = (
             training_installed != replanned_installed or capacity_delta > 0.01
         )
+        evaluation_design = StorageDesign(
+            site={bus: int(value) for bus, value in training_design["site"].items()},
+            power_mw={
+                bus: float(value)
+                for bus, value in training_design["power_mw"].items()
+            },
+            energy_mwh={
+                bus: float(value)
+                for bus, value in training_design["energy_mwh"].items()
+            },
+        )
+        evaluated_design_source = "selected_training_design"
         if design_changed_on_replan:
             print(
                 "WARNING: replanning the saved support changed the selected "
@@ -665,10 +809,20 @@ def evaluate_stage(
                 "not a new DFL update.",
                 flush=True,
             )
-    validation = oracle.solve(
-        evaluation_pool.scenarios,
-        fixed_design=planning.design,
-        allow_carbon_slack=True,
+    print(
+        f"Out-of-sample evaluation: solving {len(evaluation_pool.scenarios)} "
+        "scenarios separately...",
+        flush=True,
+    )
+    validation, validation_scenario_results, validation_wall_seconds = (
+        _solve_fixed_design_scenario_wise(
+            oracle,
+            evaluation_pool.scenarios,
+            evaluation_weights,
+            evaluation_design,
+            config.costs.demand_dollars_per_mw_year,
+            config.planning.solver_relative_gap,
+        )
     )
     if not validation.feasible:
         raise RuntimeError(
@@ -679,26 +833,56 @@ def evaluate_stage(
     # a poor denominator for comparing designs here -- the storage decision moves
     # a few percent of it and every design pays the same untouchable remainder --
     # so the difference against this reference is reported alongside it.
-    reference = StoragePlanningOracle(
+    reference_oracle = StoragePlanningOracle(
         feeder,
         replace(config.planning, max_storage_sites=0),
         config.costs,
         config.data,
         config.data_center,
-    ).solve(evaluation_pool.scenarios, allow_carbon_slack=True)
+    )
+    no_storage_design = StorageDesign(
+        site={bus: 0 for bus in feeder.storage_candidates},
+        power_mw={bus: 0.0 for bus in feeder.storage_candidates},
+        energy_mwh={bus: 0.0 for bus in feeder.storage_candidates},
+    )
+    print(
+        f"No-storage reference: solving {len(evaluation_pool.scenarios)} "
+        "scenarios separately...",
+        flush=True,
+    )
+    reference, reference_scenario_results, reference_wall_seconds = (
+        _solve_fixed_design_scenario_wise(
+            reference_oracle,
+            evaluation_pool.scenarios,
+            evaluation_weights,
+            no_storage_design,
+            config.costs.demand_dollars_per_mw_year,
+            config.planning.solver_relative_gap,
+        )
+    )
     payload = {
         "method": checkpoint.get("method", "reinforce"),
         "generator": checkpoint_generator,
         "device": str(device),
         "test_split": config.data.test_split,
         "test_scenarios_evaluated": len(evaluation_pool.scenarios),
+        "evaluation_relative_gap": config.planning.solver_relative_gap,
+        "evaluation_selection_rule": config.dfl.evaluation_selection_rule,
+        "evaluation_scenario_names": list(evaluation_names),
+        "evaluation_scenario_weights": list(evaluation_weights),
         "no_storage_reference": reference.to_dict(),
+        "no_storage_scenario_results": [
+            result.to_dict() for result in reference_scenario_results
+        ],
+        "no_storage_wall_seconds": reference_wall_seconds,
         "objectives_comparable": (
-            _bounded_result(reference) and _bounded_result(validation)
+            _bounded_result(reference, config.planning.solver_relative_gap)
+            and _bounded_result(validation, config.planning.solver_relative_gap)
         ),
         "storage_value": (
             float(reference.objective) - float(validation.objective)
-            if _bounded_result(reference) and _bounded_result(validation)
+            if _bounded_result(reference, config.planning.solver_relative_gap)
+            and _bounded_result(validation, config.planning.solver_relative_gap)
             else None
         ),
         "generated_scenarios": [
@@ -707,12 +891,19 @@ def evaluate_stage(
         ],
         "scenario_summary": {
             "generated": _scenario_set_summary(generated, weights),
-            "observed_test": _scenario_set_summary(evaluation_pool.scenarios),
+            "observed_test": _scenario_set_summary(
+                evaluation_pool.scenarios, evaluation_weights
+            ),
         },
         "planning": planning.to_dict(),
         "selected_training_design": training_design,
+        "evaluated_design_source": evaluated_design_source,
         "design_changed_on_replan": design_changed_on_replan,
         "out_of_sample_validation": validation.to_dict(),
+        "out_of_sample_scenario_results": [
+            result.to_dict() for result in validation_scenario_results
+        ],
+        "out_of_sample_wall_seconds": validation_wall_seconds,
     }
     _write_json(paths.dfl_json_for("result", tag), payload)
     _write_trajectories(

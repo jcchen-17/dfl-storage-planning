@@ -287,6 +287,7 @@ class ShapeStatistics:
     net_load_scale: torch.Tensor
     net_peak_scale: torch.Tensor
     price_spread_scale: torch.Tensor
+    carbon_spread_scale: torch.Tensor
 
     @classmethod
     def fit(cls, observed_normalized: torch.Tensor, layout: TrajectoryLayout) -> "ShapeStatistics":
@@ -295,6 +296,10 @@ class ShapeStatistics:
         net_peak = net_load.max(dim=1).values
         price = layout.price(raw)
         spread = price.max(dim=1).values - price.min(dim=1).values
+        carbon = layout.raw(layout.as_time(observed_normalized))[
+            ..., 3 * layout.field_size + 3
+        ]
+        carbon_spread = carbon.max(dim=1).values - carbon.min(dim=1).values
         return cls(
             layout=layout,
             net_load_scale=torch.maximum(
@@ -306,6 +311,25 @@ class ShapeStatistics:
             price_spread_scale=torch.maximum(
                 spread.std(), 0.1 * spread.abs().mean()
             ).clamp_min(1.0),
+            carbon_spread_scale=torch.maximum(
+                carbon_spread.std(), 0.1 * carbon_spread.abs().mean()
+            ).clamp_min(0.01),
+        )
+
+    def carbon_spread_loss(
+        self,
+        prediction_time_major: torch.Tensor,
+        target_time_major: torch.Tensor,
+    ) -> torch.Tensor:
+        """Scaled paired error in the within-horizon carbon-intensity swing."""
+
+        index = 3 * self.layout.field_size + 3
+        predicted = self.layout.raw(prediction_time_major)[..., index]
+        target = self.layout.raw(target_time_major)[..., index]
+        predicted_spread = predicted.max(dim=1).values - predicted.min(dim=1).values
+        target_spread = target.max(dim=1).values - target.min(dim=1).values
+        return torch.mean(
+            ((predicted_spread - target_spread) / self.carbon_spread_scale) ** 2
         )
 
     def summaries(self, normalized_time_major: torch.Tensor) -> tuple[torch.Tensor, ...]:

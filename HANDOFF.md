@@ -255,16 +255,78 @@ mean from 3,967 to 3,878 and the sd from 743 to 729, so it changes nothing.
 
 ## What to do next, in order
 
-1. Finish seeds 1-4 of `run_dfl_seeds.py --rule kmeans --tag kmeansinit`. If
-   they land near 4,170 rather than near 4,118, the result is independent of
-   initialisation.
-2. Build the same-budget random-search control described above. This decides
-   whether the policy contributes anything, and the current evidence suggests
-   it may not.
-3. Only if the answer to 2 is favourable is it worth returning to the generator
-   weights or to larger K.
+The old list below has been superseded by the dataset-v2 reset. The derived v1
+regime datasets, generated scratch configs and incomplete K=1 run were removed;
+raw inputs and provenance artifacts were retained.
+
+1. Use `data/processed/ieee13_smartds_dfl_v2/dfl_scenarios_v2_48h.npz` and
+   `configs/dataset_v2_baselines.yaml` as the supported baseline.
+2. Treat `outputs/dataset_v2_baselines/exhaustive_k1_v2.json` as the K=1 oracle:
+   182 training supports, 147 usable plans, 140 distinct engineering designs.
+   The strict winner is `v2_2016_028_48h`, installing 0.337 MW / 1.303 MWh at
+   bus 671. Its weighted storage value is $2,263.98 on validation and $8,534.10
+   on test.
+3. The channel audit shows that load/PV and price drive capacity. Current carbon
+   timing is weak: flattening it changes the bus but only changes test value by
+   about $7, while reversing it returns the original design.
+4. Do not resume the current continuous CVAE+REINFORCE path. First implement a
+   finite-library selector over observed training scenarios and require it to
+   beat same-budget random search. At budgets 8--64, the generic GP-BO and CEM
+   controls did not do so; see `search_controls_v2.json`.
+5. Only after a selector passes that control should a generator be reconsidered.
+   If it is, encode stochastic fields only (load, PV, temperature/carbon as
+   justified), use a latent dimension near 8 rather than 64, and reconstruct
+   deterministic workload/PUE/price outside the model.
+
+## Carbon-accounting reset
+
+The v2 channel ablation used `system_average`, which blends storage carbon and
+does not test the paper's vintage-layer contribution. The model now supports
+`layered_system`: it uses the identical linear system-boundary cap but retains
+one fixed-carbon vintage per charging interval. This removes the invalid loose
+nodal McCormick comparison and keeps the problem as a MILP.
+
+`scripts/compare_carbon_accounting_v2.py` plans with both formulations and
+evaluates both designs under `layered_system`. A four-representative screening
+scan showed equal regret at caps 0.30/0.26, but layered regret fell from
+$1,047.61 to $465.64 at 0.22 and from $2,135.78 to $295.05 at 0.18. Those caps
+were soft targets priced at $185/tCO2. With price zero and slack forbidden, the
+hourly cap is feasible at 0.30 and infeasible at 0.26 or below. Therefore the
+next model change should be a 48-hour-total or rolling-24-hour carbon budget,
+not artificial rescaling of the carbon data. Also decide whether the claimed
+boundary is the whole feeder or requires explicit data-center power attribution.
+
+That 48-hour-total change is now implemented as
+`planning.carbon_cap_scope: horizon`; `hourly` preserves the original behavior.
+Both scopes compute carbon from hourly power and carbon intensity. With a
+positive `carbon_price_dollars_per_t`, hourly prices each interval's excess
+tonnes separately, while horizon prices only net excess tonnes after summing
+carbon mass and energy. With zero price and no slack, both are hard constraints.
+
+The four-representative 2x2 scan is in
+`carbon_accounting_scope_comparison_v2.json`. Every solve was optimal. Hourly
+layered accounting beat blended accounting once caps tightened (regret 465.64
+versus 1,047.61 at 0.22; 295.05 versus 2,135.78 at 0.18). Under the 48-hour
+budget, both accounting methods had identical regret at all four caps. This is
+expected under cyclic SOC and carbon-mass conservation: aggregation erases the
+discharge-vintage timing that creates the contribution. Retain both results;
+do not claim layered accounting improves a full-cycle total when the equations
+show it cannot. Rolling 24-hour windows are the next plausible middle case.
+
+## Runnable dataset-v2 DFL configuration
+
+`configs/dataset_v2_dfl_hourly_layered.yaml` now provides an isolated exploratory
+CVAE + REINFORCE run. ScenarioCodec layout v4 locks the one truly dataset-fixed
+trajectory (workload) to its saved template after decoding; PUE and price remain
+conditional generated fields because they vary across v2. The configuration
+uses K=1, latent 8, 12 epochs x 8 policy samples, weighted k-means validation,
+hourly `layered_system`, and a 1e-3 training / 1e-4 reporting solver gap. It does
+not overwrite any v2 baseline output. Commands are in `DATASET_V2.md`.
 
 Do not start by tuning REINFORCE hyperparameters. The gradient has been
 measured not to move the decision loss further than the solver can resolve;
 learning-rate and exploration changes cannot fix a signal that is below the
 resolution of the thing being optimised.
+
+Dataset-v2 details, rebuild commands and new empirical results are recorded in
+`DATASET_V2.md`.

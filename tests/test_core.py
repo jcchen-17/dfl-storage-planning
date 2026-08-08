@@ -12,7 +12,7 @@ from storage_dfl.data import (
     load_historical_scenarios,
     make_toy_scenarios,
 )
-from storage_dfl.dfl import DirectSupportPolicy
+from storage_dfl.dfl import DirectSupportPolicy, select_scenarios
 from storage_dfl.dfl.scenario_bo import (
     gp_lower_confidence_bound,
     scenario_features,
@@ -46,6 +46,11 @@ from storage_dfl.planning import PlanningJob, PlanningResult, StorageDesign
 from storage_dfl.planning.results import infeasible_result
 from storage_dfl.dfl.scenario_bo import train_scenario_bo
 from scripts.sweep_k import _generator_candidate_pool, _generator_initial_support
+from scripts.build_dfl_dataset_v2 import (
+    constant_power_factor_reactive,
+    non_overlapping_starts,
+    seasonal_carbon_assignment,
+)
 
 
 def test_ieee13_is_radial() -> None:
@@ -71,6 +76,146 @@ def test_ieee13_is_radial() -> None:
         len(feeder.bus_phases[bus]) == 3 for bus in feeder.storage_candidates
     )
 
+
+def test_dataset_v2_windows_do_not_overlap_or_cross_years() -> None:
+    years = np.repeat(np.asarray([2016, 2017]), 8760)
+    starts = non_overlapping_starts(years, 48)
+
+    assert starts.shape == (364,)
+    assert np.all(np.diff(starts[:182]) == 48)
+    assert np.all(np.diff(starts[182:]) == 48)
+    assert starts[181] + 48 <= 8760
+    assert starts[182] == 8760
+
+
+def test_dataset_v2_carbon_permutation_preserves_blocks_and_power_factor() -> None:
+    feeder = ieee13_unbalanced_microgrid()
+    active = np.ones((6, 13, 3), dtype=np.float32)
+    reactive = constant_power_factor_reactive(active)
+    ratio = np.divide(
+        feeder.base_reactive_load_mvar,
+        feeder.base_active_load_mw,
+        out=np.zeros_like(feeder.base_reactive_load_mvar),
+        where=feeder.base_active_load_mw > 0.0,
+    )
+    assert np.allclose(reactive, active * ratio[None, :, :])
+
+    carbon = np.arange(8 * 4, dtype=np.float32).reshape(8, 4)
+    months = np.asarray([1, 1, 4, 4, 7, 7, 10, 10])
+    splits = np.asarray(["train"] * 8)
+    assigned, source = seasonal_carbon_assignment(carbon, months, splits, seed=9)
+    assert set(source.tolist()) == set(range(8))
+    assert {tuple(row) for row in assigned} == {tuple(row) for row in carbon}
+    # Every two-member seasonal group is closed under the permutation.
+    for start in range(0, 8, 2):
+        assert set(source[start : start + 2].tolist()) == {start, start + 1}
+
+
+def test_kmeans_evaluation_representatives_carry_cluster_probability() -> None:
+    feeder = ieee13_unbalanced_microgrid()
+    pool = make_toy_scenarios(feeder, num_scenarios=10, horizon=6, seed=101)
+    codec = ScenarioCodec.fit(pool, feeder)
+    scenarios, weights, labels = select_scenarios(
+        "kmeans", pool, codec, count=3, seed=17
+    )
+
+    assert len(scenarios) == len(weights) == len(labels) == 3
+    assert np.isclose(sum(weights), 1.0)
+    assert all(weight >= 0.1 for weight in weights)
+    # Cluster probabilities are integer shares of the ten-point pool.
+    assert all(np.isclose(weight * 10, round(weight * 10)) for weight in weights)
+
+
+def test_layered_system_is_a_supported_carbon_formulation() -> None:
+    config = load_config("configs/dataset_v2_baselines.yaml")
+    feeder = ieee13_unbalanced_microgrid()
+    oracle = StoragePlanningOracle(
+        feeder,
+        replace(config.planning, carbon_formulation="layered_system"),
+        config.costs,
+        config.data,
+        config.data_center,
+    )
+    assert oracle.planning.carbon_formulation == "layered_system"
+
+
+def test_dc_boundary_carbon_formulations_are_supported() -> None:
+    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    feeder = ieee13_unbalanced_microgrid()
+    for formulation in (
+        "average_dc",
+        "layered_dc",
+        "layered_dc_exact",
+        "carbon_bins_dc",
+        "binned_storage_dc",
+    ):
+        oracle = StoragePlanningOracle(
+            feeder,
+            replace(config.planning, carbon_formulation=formulation),
+            config.costs,
+            config.data,
+            config.data_center,
+        )
+        assert oracle.planning.carbon_formulation == formulation
+
+    horizon_oracle = StoragePlanningOracle(
+        feeder,
+        replace(
+            config.planning,
+            carbon_formulation="layered_system",
+            carbon_cap_scope="horizon",
+        ),
+        config.costs,
+        config.data,
+        config.data_center,
+    )
+    assert horizon_oracle.planning.carbon_cap_scope == "horizon"
+
+    with pytest.raises(ValueError, match="carbon_cap_scope"):
+        StoragePlanningOracle(
+            feeder,
+            replace(config.planning, carbon_cap_scope="daily"),
+            config.costs,
+            config.data,
+            config.data_center,
+        )
+
+    with pytest.raises(ValueError, match="supported only"):
+        StoragePlanningOracle(
+            feeder,
+            replace(
+                config.planning,
+                carbon_formulation="mccormick",
+                carbon_cap_scope="horizon",
+            ),
+            config.costs,
+            config.data,
+            config.data_center,
+        )
+
+
+def test_codec_restores_dataset_fixed_workload_template() -> None:
+    feeder = ieee13_unbalanced_microgrid()
+    original = make_toy_scenarios(feeder, num_scenarios=6, horizon=6, seed=909)
+    template = original.scenarios[0].workload_arrival.copy()
+    pool = ScenarioPool(
+        tuple(
+            replace(scenario, workload_arrival=template.copy())
+            for scenario in original.scenarios
+        )
+    )
+    codec = ScenarioCodec.fit(pool, feeder)
+    trajectories, contexts = codec.encode_pool(pool)
+    assert codec.workload_template is not None
+
+    features_per_hour = codec.trajectory_dim // codec.horizon
+    workload_offset = 3 * len(feeder.buses) * len(feeder.phases)
+    corrupted = trajectories[:1].copy().reshape(1, codec.horizon, features_per_hour)
+    corrupted[:, :, workload_offset] = 100.0
+    decoded = codec.decode_batch(
+        corrupted.reshape(1, -1), contexts[:1], name_prefix="fixed_workload"
+    )[0]
+    assert np.array_equal(decoded.workload_arrival, template)
 
 def test_codec_cvae_and_direct_support() -> None:
     feeder = ieee13_unbalanced_microgrid()

@@ -82,7 +82,7 @@ def _check_backend_supports(pcfg: PlanningConfig) -> None:
     if pcfg.solver_backend != "highs":
         return
     unsupported = []
-    if pcfg.carbon_formulation == "exact":
+    if pcfg.carbon_formulation in {"exact", "layered_dc_exact"}:
         unsupported.append("carbon_formulation: exact (nonconvex bilinear equalities)")
     if pcfg.flow_limit_formulation == "quadratic":
         unsupported.append("flow_limit_formulation: quadratic (second-order cones)")
@@ -154,13 +154,6 @@ class PlanningJob:
     fixed_design: StorageDesign | None = None
 
 
-# Upper bound on the share of one interval's workload that may be processed in
-# that interval. Shared deliberately: the "demand" carbon envelope sizes the
-# facility's largest possible draw from it, and if the two ever diverged that
-# bound would become invalid and would silently cut off feasible dispatches.
-_PROCESSED_UPPER = 1.2
-
-
 def _add_mccormick_envelope(
     model: Model,
     product: object,
@@ -209,12 +202,19 @@ class StoragePlanningOracle:
         if planning.carbon_formulation not in {
             "exact",
             "mccormick",
+            "layered_dc",
+            "layered_dc_exact",
             "aggregate_mccormick",
+            "average_dc",
+            "carbon_bins_dc",
+            "binned_storage_dc",
             "system_average",
+            "layered_system",
         }:
             raise ValueError(
-                "carbon_formulation must be 'exact', 'mccormick', or "
-                "'aggregate_mccormick', or 'system_average'"
+                "carbon_formulation must be 'exact', 'mccormick', "
+                "'layered_dc', 'layered_dc_exact', 'aggregate_mccormick', 'average_dc', "
+                "'carbon_bins_dc', 'binned_storage_dc', 'system_average', or 'layered_system'"
             )
         if planning.flow_limit_formulation not in {"quadratic", "polygon"}:
             raise ValueError(
@@ -227,6 +227,41 @@ class StoragePlanningOracle:
             raise ValueError(
                 "carbon_envelope_bound must be 'line_rating' or 'demand', got "
                 f"{planning.carbon_envelope_bound!r}"
+            )
+        if planning.carbon_cap_scope not in {"hourly", "horizon"}:
+            raise ValueError(
+                "carbon_cap_scope must be 'hourly' or 'horizon', got "
+                f"{planning.carbon_cap_scope!r}"
+            )
+        if planning.storage_service_mode not in {
+            "shared_feeder",
+            "dedicated_dc",
+            "fixed_dc_siting",
+        }:
+            raise ValueError(
+                "storage_service_mode must be 'shared_feeder', 'dedicated_dc', "
+                "or 'fixed_dc_siting'."
+            )
+        if (
+            planning.storage_service_mode == "dedicated_dc"
+            and planning.carbon_formulation != "carbon_bins_dc"
+        ):
+            raise ValueError(
+                "dedicated_dc currently requires carbon_formulation='carbon_bins_dc'."
+            )
+        if (
+            planning.carbon_formulation == "carbon_bins_dc"
+            and planning.carbon_cap_scope != "hourly"
+        ):
+            raise ValueError("carbon_bins_dc currently supports hourly carbon caps only.")
+        if (
+            planning.carbon_cap_scope == "horizon"
+            and planning.carbon_formulation
+            not in {"system_average", "layered_system"}
+        ):
+            raise ValueError(
+                "carbon_cap_scope='horizon' is supported only by "
+                "system_average and layered_system"
             )
         self._cache: dict[tuple, PlanningResult] = {}
         # The no-storage bootstrap depends only on the scenario set, the weights
@@ -312,6 +347,12 @@ class StoragePlanningOracle:
             allow_carbon_slack=allow_carbon_slack,
         )
         model = artifacts.model
+        # Gurobi adds variables lazily.  If the no-storage bootstrap is
+        # infeasible there is no named warm start to force an update, and
+        # hashing a just-created variable for the fallback partial solution
+        # raises "Variable has not yet been added to the model".  Querying the
+        # count materializes the model for every backend before either path.
+        model.getNVars()
         warm_start_accepted = self._apply_no_storage_warm_start(
             model,
             warm_start_values,
@@ -937,7 +978,10 @@ class StoragePlanningOracle:
         model, quicksum = _new_model(
             "dfl_batch_resolved_storage_planning", pcfg.solver_backend
         )
-        if pcfg.solver_backend == "gurobi" and pcfg.carbon_formulation == "exact":
+        if pcfg.solver_backend == "gurobi" and pcfg.carbon_formulation in {
+            "exact",
+            "layered_dc_exact",
+        }:
             # The exact carbon identity is a bilinear equality, which Gurobi only
             # accepts once nonconvex quadratics are enabled.
             model.setNonconvex(True)
@@ -950,7 +994,10 @@ class StoragePlanningOracle:
             # takes the whole run with it. Bounded, it stops cleanly and keeps the
             # incumbent it already had.
             model.setParam("limits/memory", float(pcfg.solver_memory_limit_mb))
-        if fixed_design is not None and pcfg.carbon_formulation == "exact":
+        if fixed_design is not None and pcfg.carbon_formulation in {
+            "exact",
+            "layered_dc_exact",
+        }:
             # SCIP can incorrectly cut off the fixed-design problem while
             # eliminating zero-capacity bilinear vintage equations. Keeping the
             # original equations avoids that presolve artifact in validation.
@@ -981,6 +1028,14 @@ class StoragePlanningOracle:
             model.addCons(ecap[bus] >= pcfg.min_duration_hours * pcap[bus])
             model.addCons(ecap[bus] <= pcfg.max_duration_hours * pcap[bus])
         model.addCons(quicksum(site.values()) <= pcfg.max_storage_sites)
+        if pcfg.storage_service_mode in {"dedicated_dc", "fixed_dc_siting"}:
+            if feeder.data_center_bus not in candidates:
+                raise ValueError("The data-center bus must be a storage candidate.")
+            for bus in candidates:
+                required = int(
+                    pcfg.max_storage_sites > 0 and bus == feeder.data_center_bus
+                )
+                model.addCons(site[bus] == required)
 
         if fixed_design is not None:
             for bus in candidates:
@@ -997,9 +1052,12 @@ class StoragePlanningOracle:
                 model.chgVarUb(ecap[bus], energy_value)
 
         investment = ccfg.capital_recovery_factor * quicksum(
-            ccfg.site_dollars * site[bus]
-            + ccfg.power_dollars_per_mw * pcap[bus]
-            + ccfg.energy_dollars_per_mwh * ecap[bus]
+            ccfg.battery_capex_scale
+            * (
+                ccfg.site_dollars * site[bus]
+                + ccfg.power_dollars_per_mw * pcap[bus]
+                + ccfg.energy_dollars_per_mwh * ecap[bus]
+            )
             for bus in candidates
         )
 
@@ -1009,13 +1067,32 @@ class StoragePlanningOracle:
         retention = 1.0 - pcfg.self_discharge
         epsilon_charge = 1.0e-4
         big_m_carbon = pcfg.carbon_intensity_max
+        # Both system-boundary formulations apply exactly the same carbon cap.
+        # They differ only inside storage: system_average blends all inventory,
+        # while layered_system retains the carbon vintage of every charge.
+        use_system_boundary = pcfg.carbon_formulation in {
+            "system_average",
+            "layered_system",
+        }
         use_system_average = pcfg.carbon_formulation == "system_average"
+        use_layered_system = pcfg.carbon_formulation == "layered_system"
+        use_carbon_bins = pcfg.carbon_formulation == "carbon_bins_dc"
+        use_binned_storage = pcfg.carbon_formulation == "binned_storage_dc"
+        use_storage_bins = use_carbon_bins or use_binned_storage
+        carbon_bin_intensity = (0.0, 0.15, 0.22, 0.28, 0.35, 0.45, 0.72, 0.75)
         use_aggregate = pcfg.carbon_formulation in {
             "aggregate_mccormick",
+            "average_dc",
             "system_average",
         }
-        use_vintage_mccormick = pcfg.carbon_formulation == "mccormick"
-        use_mccormick = pcfg.carbon_formulation != "exact"
+        use_vintage_mccormick = pcfg.carbon_formulation in {
+            "mccormick",
+            "layered_dc",
+        }
+        use_mccormick = pcfg.carbon_formulation not in {
+            "exact",
+            "layered_dc_exact",
+        }
         storage_disabled = pcfg.max_storage_sites == 0 or (
             fixed_design is not None
             and not any(fixed_design.site[bus] for bus in candidates)
@@ -1026,6 +1103,9 @@ class StoragePlanningOracle:
             times = range(horizon)
             states = range(horizon + 1)
             layers = range(horizon + 1)
+            horizon_carbon_terms: list[object] = []
+            horizon_energy_terms: list[object] = []
+            horizon_energy_upper = 0.0
 
             # Power a bus can absorb / inject in one interval. Used by the
             # "demand" carbon envelope to replace line thermal ratings, which
@@ -1036,9 +1116,9 @@ class StoragePlanningOracle:
                 total = float(scenario.active_load_mw[t, bus_index[bus]].sum())
                 if bus == feeder.data_center_bus:
                     total += dccfg.power_mw(
-                        float(scenario.pue[t]), _PROCESSED_UPPER
+                        float(scenario.pue[t]), dccfg.workload_processing_upper
                     )
-                if bus in candidates:
+                if bus in candidates and not storage_disabled:
                     total += pcfg.max_power_mw
                 return total
 
@@ -1048,7 +1128,7 @@ class StoragePlanningOracle:
                     total += pcfg.backup_generator_mw
                 if bus == root:
                     total += pcfg.grid_limit_mw
-                if bus in candidates:
+                if bus in candidates and not storage_disabled:
                     total += pcfg.max_power_mw
                 return total
 
@@ -1063,7 +1143,11 @@ class StoragePlanningOracle:
                 )
 
             processed = {
-                t: model.addVar(lb=0.0, ub=_PROCESSED_UPPER, name=f"work[{sid},{t}]")
+                t: model.addVar(
+                    lb=0.0,
+                    ub=dccfg.workload_processing_upper,
+                    name=f"work[{sid},{t}]",
+                )
                 for t in times
             }
             backlog = {t: model.addVar(lb=0.0, ub=2.5, name=f"backlog[{sid},{t}]") for t in states}
@@ -1137,7 +1221,7 @@ class StoragePlanningOracle:
                         lb=-rating, ub=rating,
                         name=f"q[{sid},{edge[0]},{edge[1]},{edge[2]},{t}]",
                     )
-                    if not use_system_average:
+                    if not use_system_boundary:
                         flow_plus[key] = model.addVar(
                             lb=0.0, ub=rating,
                             name=f"pplus[{sid},{edge[0]},{edge[1]},{edge[2]},{t}]",
@@ -1159,9 +1243,81 @@ class StoragePlanningOracle:
                 for bus, phase in node_phases
                 for t in times
             }
-            nodal_carbon = {} if use_system_average else {(bus, t): model.addVar(lb=0.0, ub=pcfg.carbon_intensity_max, name=f"ci[{sid},{bus},{t}]") for bus in buses for t in times}
+            nodal_carbon = {} if use_system_boundary or use_carbon_bins else {(bus, t): model.addVar(lb=0.0, ub=pcfg.carbon_intensity_max, name=f"ci[{sid},{bus},{t}]") for bus in buses for t in times}
+            nodal_bin_active: dict[tuple[str, int, int], object] = {}
+            nodal_bin_ci: dict[tuple[str, int, int], object] = {}
+            if use_binned_storage:
+                for bus in buses:
+                    for t in times:
+                        for b, upper in enumerate(carbon_bin_intensity):
+                            lower = 0.0 if b == 0 else carbon_bin_intensity[b - 1]
+                            nodal_bin_active[bus, t, b] = model.addVar(
+                                vtype="B", name=f"ci_bin_active[{sid},{bus},{t},{b}]"
+                            )
+                            nodal_bin_ci[bus, t, b] = model.addVar(
+                                lb=0.0, ub=upper,
+                                name=f"ci_bin_value[{sid},{bus},{t},{b}]",
+                            )
+                            model.addCons(
+                                nodal_bin_ci[bus, t, b]
+                                >= lower * nodal_bin_active[bus, t, b]
+                            )
+                            model.addCons(
+                                nodal_bin_ci[bus, t, b]
+                                <= upper * nodal_bin_active[bus, t, b]
+                            )
+                        model.addCons(
+                            quicksum(
+                                nodal_bin_active[bus, t, b]
+                                for b in range(len(carbon_bin_intensity))
+                            ) == 1
+                        )
+                        model.addCons(
+                            quicksum(
+                                nodal_bin_ci[bus, t, b]
+                                for b in range(len(carbon_bin_intensity))
+                            ) == nodal_carbon[bus, t]
+                        )
+
+            def add_piecewise_carbon_product(
+                product: object,
+                bus: str,
+                t: int,
+                power: object,
+                power_upper: float,
+                prefix: str,
+            ) -> None:
+                pieces = []
+                for b, upper in enumerate(carbon_bin_intensity):
+                    lower = 0.0 if b == 0 else carbon_bin_intensity[b - 1]
+                    active = nodal_bin_active[bus, t, b]
+                    ci_piece = nodal_bin_ci[bus, t, b]
+                    power_piece = model.addVar(
+                        lb=0.0, ub=power_upper,
+                        name=f"{prefix}_power_piece[{b}]",
+                    )
+                    carbon_piece = model.addVar(
+                        lb=0.0, ub=upper * power_upper,
+                        name=f"{prefix}_carbon_piece[{b}]",
+                    )
+                    model.addCons(power_piece <= power_upper * active)
+                    model.addCons(carbon_piece >= lower * power_piece)
+                    model.addCons(carbon_piece <= upper * power_piece)
+                    model.addCons(
+                        carbon_piece
+                        >= upper * power_piece + power_upper * ci_piece
+                        - upper * power_upper * active
+                    )
+                    model.addCons(
+                        carbon_piece
+                        <= lower * power_piece + power_upper * ci_piece
+                        - lower * power_upper * active
+                    )
+                    pieces.append((power_piece, carbon_piece))
+                model.addCons(quicksum(piece[0] for piece in pieces) == power)
+                model.addCons(quicksum(piece[1] for piece in pieces) == product)
             if allow_carbon_slack:
-                if use_system_average:
+                if use_system_boundary or use_carbon_bins:
                     carbon_slack = {
                         ("system", t): model.addVar(
                             lb=0.0,
@@ -1181,7 +1337,7 @@ class StoragePlanningOracle:
 
             charge_status = {} if storage_disabled else {(bus, t): model.addVar(vtype="B", name=f"uch[{sid},{bus},{t}]") for bus in candidates for t in times}
             discharge_status = {} if storage_disabled else {(bus, t): model.addVar(vtype="B", name=f"udc[{sid},{bus},{t}]") for bus in candidates for t in times}
-            skip_vintages = storage_disabled or use_aggregate
+            skip_vintages = storage_disabled or use_aggregate or use_storage_bins
             layer_active = {} if skip_vintages else {(bus, k): model.addVar(vtype="B", name=f"ulayer[{sid},{bus},{k}]") for bus in candidates for k in range(1, horizon + 1)}
             vintage_carbon = {} if skip_vintages else {(bus, k): model.addVar(lb=0.0, ub=pcfg.carbon_intensity_max, name=f"vintage_ci[{sid},{bus},{k}]") for bus in candidates for k in layers}
             layer_charge = {} if skip_vintages else {(bus, k): model.addVar(lb=0.0, ub=pcfg.max_power_mw, name=f"layer_ch[{sid},{bus},{k}]") for bus in candidates for k in range(1, horizon + 1)}
@@ -1191,12 +1347,20 @@ class StoragePlanningOracle:
             layer_discharge_carbon: dict[tuple[str, int, int], object] = {}
             flow_carbon_plus: dict[tuple[tuple[str, str, str], int], object] = {}
             flow_carbon_minus: dict[tuple[tuple[str, str, str], int], object] = {}
+            bin_charge: dict[tuple[str, int, int], object] = {}
+            bin_discharge: dict[tuple[str, int, int], object] = {}
+            bin_energy: dict[tuple[str, int, int], object] = {}
+            bin_flow_plus: dict[tuple[tuple[str, str, str], int, int], object] = {}
+            bin_flow_minus: dict[tuple[tuple[str, str, str], int, int], object] = {}
+            bin_active: dict[tuple[str, int, int], object] = {}
 
             model.addCons(backlog[0] == 0.0, name=f"backlog_start[{sid}]")
             model.addCons(
                 backlog[horizon] == 0.0,
                 name=f"backlog_terminal[{sid}]",
             )
+            if dccfg.workload_max_delay_hours < 0:
+                raise ValueError("workload_max_delay_hours must be nonnegative.")
             for t in times:
                 model.addCons(
                     backlog[t + 1]
@@ -1205,15 +1369,23 @@ class StoragePlanningOracle:
                     - processed[t],
                     name=f"backlog_dynamics[{sid},{t}]",
                 )
-                horizon_deadline = min(horizon - 1, t + 2)
-                model.addCons(
-                    quicksum(
-                        processed[tau]
-                        for tau in range(t + 1, horizon_deadline + 1)
+                if dccfg.workload_max_delay_hours == 0:
+                    model.addCons(
+                        processed[t] == float(scenario.workload_arrival[t]),
+                        name=f"work_fixed[{sid},{t}]",
                     )
-                    >= backlog[t + 1],
-                    name=f"work_deadline[{sid},{t}]",
-                )
+                else:
+                    horizon_deadline = min(
+                        horizon - 1, t + dccfg.workload_max_delay_hours
+                    )
+                    model.addCons(
+                        quicksum(
+                            processed[tau]
+                            for tau in range(t + 1, horizon_deadline + 1)
+                        )
+                        >= backlog[t + 1],
+                        name=f"work_deadline[{sid},{t}]",
+                    )
                 dc_power = dccfg.power_mw(float(scenario.pue[t]), processed[t])
                 # Shedding can never take the facility below its IT base draw.
                 model.addCons(shed[t] <= dc_power - dccfg.it_base_mw)
@@ -1258,6 +1430,80 @@ class StoragePlanningOracle:
                         discharge_power[bus, t] = 0.0
                         storage_energy[bus, t] = 0.0
                         aggregate_discharge_carbon[bus, t] = 0.0
+            if use_storage_bins and not storage_disabled:
+                initial_bin = min(
+                    range(len(carbon_bin_intensity)),
+                    key=lambda b: abs(carbon_bin_intensity[b] - pcfg.initial_carbon_intensity),
+                )
+                for bus in candidates:
+                    for b in range(len(carbon_bin_intensity)):
+                        for t in states:
+                            bin_energy[bus, b, t] = model.addVar(
+                                lb=0.0,
+                                ub=pcfg.max_energy_mwh,
+                                name=f"bin_e[{sid},{bus},{b},{t}]",
+                            )
+                        model.addCons(
+                            bin_energy[bus, b, 0]
+                            == (pcfg.initial_soc * ecap[bus] if b == initial_bin else 0.0)
+                        )
+                        for t in times:
+                            bin_charge[bus, b, t] = model.addVar(
+                                lb=0.0, ub=pcfg.max_power_mw,
+                                name=f"bin_ch[{sid},{bus},{b},{t}]",
+                            )
+                            bin_discharge[bus, b, t] = model.addVar(
+                                lb=0.0, ub=pcfg.max_power_mw,
+                                name=f"bin_dc[{sid},{bus},{b},{t}]",
+                            )
+                            if use_binned_storage:
+                                bin_active[bus, b, t] = nodal_bin_active[bus, t, b]
+                            model.addCons(
+                                bin_energy[bus, b, t + 1]
+                                == retention * bin_energy[bus, b, t]
+                                + pcfg.charge_efficiency * bin_charge[bus, b, t] * dt
+                                - bin_discharge[bus, b, t] * dt / pcfg.discharge_efficiency
+                            )
+                            model.addCons(
+                                bin_discharge[bus, b, t] * dt / pcfg.discharge_efficiency
+                                <= retention * bin_energy[bus, b, t]
+                            )
+                            if use_binned_storage:
+                                model.addCons(
+                                    bin_charge[bus, b, t]
+                                    <= pcfg.max_power_mw * bin_active[bus, b, t]
+                                )
+                    for t in times:
+                        charge_power[bus, t] = quicksum(
+                            bin_charge[bus, b, t] for b in range(len(carbon_bin_intensity))
+                        )
+                        discharge_power[bus, t] = quicksum(
+                            bin_discharge[bus, b, t] for b in range(len(carbon_bin_intensity))
+                        )
+                        model.addCons(charge_status[bus, t] <= site[bus])
+                        model.addCons(discharge_status[bus, t] <= site[bus])
+                        model.addCons(charge_status[bus, t] + discharge_status[bus, t] <= 1)
+                        model.addCons(charge_power[bus, t] <= pcap[bus])
+                        model.addCons(discharge_power[bus, t] <= pcap[bus])
+                        model.addCons(charge_power[bus, t] <= pcfg.max_power_mw * charge_status[bus, t])
+                        model.addCons(discharge_power[bus, t] <= pcfg.max_power_mw * discharge_status[bus, t])
+                        storage_energy[bus, t] = quicksum(
+                            bin_energy[bus, b, t] for b in range(len(carbon_bin_intensity))
+                        )
+                        model.addCons(storage_energy[bus, t] >= pcfg.min_soc * ecap[bus])
+                        model.addCons(storage_energy[bus, t] <= pcfg.max_soc * ecap[bus])
+                    terminal_energy = quicksum(
+                        bin_energy[bus, b, horizon] for b in range(len(carbon_bin_intensity))
+                    )
+                    terminal_carbon = quicksum(
+                        carbon_bin_intensity[b] * bin_energy[bus, b, horizon]
+                        for b in range(len(carbon_bin_intensity))
+                    )
+                    model.addCons(terminal_energy == pcfg.initial_soc * ecap[bus])
+                    model.addCons(
+                        terminal_carbon
+                        <= pcfg.initial_carbon_intensity * pcfg.initial_soc * ecap[bus]
+                    )
             if use_aggregate and not storage_disabled:
                 aggregate_energy = {
                     (bus, t): model.addVar(
@@ -1373,7 +1619,7 @@ class StoragePlanningOracle:
                             + pcfg.charge_efficiency * charge * dt
                             - discharge * dt / pcfg.discharge_efficiency
                         )
-                        if use_system_average:
+                        if use_system_boundary:
                             model.addCons(
                                 charge_carbon
                                 == float(scenario.grid_carbon_t_per_mwh[t]) * charge
@@ -1413,7 +1659,11 @@ class StoragePlanningOracle:
                         <= aggregate_carbon_mass[bus, 0]
                     )
 
-            for bus in (() if storage_disabled or use_aggregate else candidates):
+            for bus in (
+                ()
+                if storage_disabled or use_aggregate or use_storage_bins
+                else candidates
+            ):
                 model.addCons(vintage_carbon[bus, 0] == pcfg.initial_carbon_intensity * site[bus])
                 model.addCons(layer_energy[bus, 0, 0] == pcfg.initial_soc * ecap[bus])
                 model.addCons(layer_carbon_mass[bus, 0, 0] == pcfg.initial_carbon_intensity * layer_energy[bus, 0, 0])
@@ -1423,14 +1673,21 @@ class StoragePlanningOracle:
                     model.addCons(layer_charge[bus, k] >= epsilon_charge * layer_active[bus, k])
                     model.addCons(layer_charge[bus, k] <= pcfg.max_power_mw * layer_active[bus, k])
                     formation_t = k - 1
-                    model.addCons(
-                        vintage_carbon[bus, k] - nodal_carbon[bus, formation_t]
-                        <= big_m_carbon * (1 - layer_active[bus, k])
-                    )
-                    model.addCons(
-                        nodal_carbon[bus, formation_t] - vintage_carbon[bus, k]
-                        <= big_m_carbon * (1 - layer_active[bus, k])
-                    )
+                    if use_layered_system:
+                        model.addCons(
+                            vintage_carbon[bus, k]
+                            == float(scenario.grid_carbon_t_per_mwh[formation_t])
+                            * layer_active[bus, k]
+                        )
+                    else:
+                        model.addCons(
+                            vintage_carbon[bus, k] - nodal_carbon[bus, formation_t]
+                            <= big_m_carbon * (1 - layer_active[bus, k])
+                        )
+                        model.addCons(
+                            nodal_carbon[bus, formation_t] - vintage_carbon[bus, k]
+                            <= big_m_carbon * (1 - layer_active[bus, k])
+                        )
                     model.addCons(vintage_carbon[bus, k] <= pcfg.carbon_intensity_max * layer_active[bus, k])
 
                 for t in times:
@@ -1505,6 +1762,16 @@ class StoragePlanningOracle:
                                 pcfg.carbon_intensity_max,
                                 pcfg.max_energy_mwh,
                             )
+                        elif use_layered_system:
+                            fixed_ci = (
+                                pcfg.initial_carbon_intensity
+                                if k == 0
+                                else float(scenario.grid_carbon_t_per_mwh[k - 1])
+                            )
+                            model.addCons(
+                                layer_carbon_mass[bus, k, t]
+                                == fixed_ci * layer_energy[bus, k, t]
+                            )
                         else:
                             model.addCons(
                                 layer_carbon_mass[bus, k, t]
@@ -1515,10 +1782,28 @@ class StoragePlanningOracle:
                 for edge in phase_edges:
                     line = line_data[edge[:2]]
                     rating = line.phase_rating_mva
-                    if not use_system_average:
+                    if not use_system_boundary:
                         model.addCons(flow_p[edge, t] == flow_plus[edge, t] - flow_minus[edge, t])
                         model.addCons(flow_plus[edge, t] <= rating * direction[edge, t])
                         model.addCons(flow_minus[edge, t] <= rating * (1 - direction[edge, t]))
+                        if use_carbon_bins:
+                            for b in range(len(carbon_bin_intensity)):
+                                bin_flow_plus[edge, t, b] = model.addVar(
+                                    lb=0.0, ub=rating,
+                                    name=f"bin_pplus[{sid},{edge[0]},{edge[1]},{edge[2]},{t},{b}]",
+                                )
+                                bin_flow_minus[edge, t, b] = model.addVar(
+                                    lb=0.0, ub=rating,
+                                    name=f"bin_pminus[{sid},{edge[0]},{edge[1]},{edge[2]},{t},{b}]",
+                                )
+                            model.addCons(
+                                quicksum(bin_flow_plus[edge, t, b] for b in range(len(carbon_bin_intensity)))
+                                == flow_plus[edge, t]
+                            )
+                            model.addCons(
+                                quicksum(bin_flow_minus[edge, t, b] for b in range(len(carbon_bin_intensity)))
+                                == flow_minus[edge, t]
+                            )
                     if pcfg.flow_limit_formulation == "quadratic":
                         model.addCons(
                             flow_p[edge, t] * flow_p[edge, t]
@@ -1551,7 +1836,7 @@ class StoragePlanningOracle:
                         ),
                         name=f"voltage_drop[{sid},{edge[0]},{edge[1]},{edge[2]},{t}]",
                     )
-                    if use_mccormick and not use_system_average:
+                    if use_mccormick and not use_system_boundary and not use_carbon_bins:
                         # Bounds on the two directional flows. The rating is a
                         # thermal limit; what actually constrains the flow is
                         # what lies below the edge -- forward flow can only serve
@@ -1576,26 +1861,75 @@ class StoragePlanningOracle:
                         )
                         flow_carbon_plus[edge, t] = carbon_plus
                         flow_carbon_minus[edge, t] = carbon_minus
-                        _add_mccormick_envelope(
-                            model,
-                            carbon_plus,
-                            nodal_carbon[edge[0], t],
-                            flow_plus[edge, t],
-                            pcfg.carbon_intensity_max,
-                            plus_upper,
-                        )
-                        _add_mccormick_envelope(
-                            model,
-                            carbon_minus,
-                            nodal_carbon[edge[1], t],
-                            flow_minus[edge, t],
-                            pcfg.carbon_intensity_max,
-                            minus_upper,
-                        )
+                        if use_binned_storage:
+                            add_piecewise_carbon_product(
+                                carbon_plus, edge[0], t, flow_plus[edge, t],
+                                plus_upper,
+                                f"pw_plus[{sid},{edge[0]},{edge[1]},{edge[2]},{t}]",
+                            )
+                            add_piecewise_carbon_product(
+                                carbon_minus, edge[1], t, flow_minus[edge, t],
+                                minus_upper,
+                                f"pw_minus[{sid},{edge[0]},{edge[1]},{edge[2]},{t}]",
+                            )
+                        else:
+                            _add_mccormick_envelope(
+                                model, carbon_plus, nodal_carbon[edge[0], t],
+                                flow_plus[edge, t], pcfg.carbon_intensity_max, plus_upper,
+                            )
+                            _add_mccormick_envelope(
+                                model, carbon_minus, nodal_carbon[edge[1], t],
+                                flow_minus[edge, t], pcfg.carbon_intensity_max, minus_upper,
+                            )
                 for phase in bus_phases[root]:
                     model.addCons(voltage[root, phase, t] == 1.0)
 
                 dc_power = dccfg.power_mw(float(scenario.pue[t]), processed[t])
+                dc_bin_load = {}
+                if use_carbon_bins:
+                    for b in range(len(carbon_bin_intensity)):
+                        dc_bin_load[b] = model.addVar(
+                            lb=0.0,
+                            ub=dccfg.power_mw(float(scenario.pue[t]), dccfg.workload_processing_upper),
+                            name=f"dc_bin_load[{sid},{t},{b}]",
+                        )
+                    model.addCons(
+                        quicksum(dc_bin_load[b] for b in range(len(carbon_bin_intensity)))
+                        == dc_power - shed[t]
+                    )
+                    if (
+                        pcfg.storage_service_mode == "dedicated_dc"
+                        and not storage_disabled
+                    ):
+                        for b in range(len(carbon_bin_intensity)):
+                            # Reserve every unit discharged by the colocated
+                            # battery for the data-center sink of the same carbon
+                            # attribute. Network/PV supply may cover the rest.
+                            model.addCons(
+                                dc_bin_load[b]
+                                >= bin_discharge[feeder.data_center_bus, b, t]
+                            )
+                    dc_carbon = quicksum(
+                        carbon_bin_intensity[b] * dc_bin_load[b]
+                        for b in range(len(carbon_bin_intensity))
+                    )
+                    if pcfg.carbon_cap_scope == "horizon":
+                        horizon_carbon_terms.append(dc_carbon * dt)
+                        horizon_energy_terms.append((dc_power - shed[t]) * dt)
+                    elif ccfg.carbon_price_dollars_per_t > 0.0:
+                        excess = model.addVar(lb=0.0, name=f"dc_bin_excess[{sid},{t}]")
+                        model.addCons(
+                            dc_carbon <= pcfg.dc_carbon_cap * (dc_power - shed[t]) + excess
+                        )
+                        carbon_slack_terms.append(
+                            scenario_weight * annual_blocks
+                            * ccfg.carbon_price_dollars_per_t * excess * dt
+                        )
+                    else:
+                        slack = carbon_slack["system", t] if allow_carbon_slack else 0.0
+                        model.addCons(
+                            dc_carbon <= pcfg.dc_carbon_cap * (dc_power - shed[t]) + slack
+                        )
                 for bus, phase in node_phases:
                     bi = bus_index[bus]
                     pi = phase_index[phase]
@@ -1645,8 +1979,56 @@ class StoragePlanningOracle:
                         == outgoing_q - incoming_q,
                         name=f"reactive_balance[{sid},{bus},{phase},{t}]",
                     )
+                    if use_carbon_bins:
+                        base_bin_load = {
+                            b: model.addVar(
+                                lb=0.0,
+                                ub=float(scenario.active_load_mw[t, bi, pi]),
+                                name=f"base_bin_load[{sid},{bus},{phase},{t},{b}]",
+                            )
+                            for b in range(len(carbon_bin_intensity))
+                        }
+                        model.addCons(
+                            quicksum(base_bin_load.values())
+                            == float(scenario.active_load_mw[t, bi, pi])
+                        )
+                        grid_bin = next(
+                            b for b, intensity in enumerate(carbon_bin_intensity)
+                            if intensity >= float(scenario.grid_carbon_t_per_mwh[t]) - 1.0e-9
+                        )
+                        generator_bin = len(carbon_bin_intensity) - 1
+                        for b in range(len(carbon_bin_intensity)):
+                            commodity_source = (
+                                (grid_phase[phase, t] if bus == root and b == grid_bin else 0.0)
+                                + (local_generation_phase if bus == feeder.generator_bus and b == generator_bin else 0.0)
+                                + (pv[bus, phase, t] if b == 0 else 0.0)
+                                + (
+                                    bin_discharge[bus, b, t] / phase_count
+                                    if bus in candidates and not storage_disabled else 0.0
+                                )
+                            )
+                            commodity_in = quicksum(
+                                bin_flow_plus[edge, t, b] for edge in incoming[bus, phase]
+                            ) + quicksum(
+                                bin_flow_minus[edge, t, b] for edge in outgoing[bus, phase]
+                            )
+                            commodity_out = quicksum(
+                                bin_flow_plus[edge, t, b] for edge in outgoing[bus, phase]
+                            ) + quicksum(
+                                bin_flow_minus[edge, t, b] for edge in incoming[bus, phase]
+                            )
+                            commodity_sink = base_bin_load[b]
+                            if bus == feeder.data_center_bus:
+                                commodity_sink += dc_bin_load[b] / phase_count
+                            if bus in candidates and not storage_disabled:
+                                commodity_sink += bin_charge[bus, b, t] / phase_count
+                            model.addCons(
+                                commodity_source + commodity_in
+                                == commodity_sink + commodity_out,
+                                name=f"bin_balance[{sid},{bus},{phase},{t},{b}]",
+                            )
 
-                for bus in (() if use_system_average else buses):
+                for bus in (() if use_system_boundary or use_carbon_bins else buses):
                     local_generation = generator[t] if bus == feeder.generator_bus else 0.0
                     grid_injection = grid[t] if bus == root else 0.0
                     storage_discharge = discharge_power[bus, t] if bus in candidates else 0.0
@@ -1678,11 +2060,21 @@ class StoragePlanningOracle:
                             aggregate_discharge_carbon[bus, t]
                             if use_aggregate
                             else quicksum(
+                                carbon_bin_intensity[b] * bin_discharge[bus, b, t]
+                                for b in range(len(carbon_bin_intensity))
+                            )
+                            if use_binned_storage
+                            else quicksum(
                                 (
                                     layer_discharge_carbon[bus, k, t]
                                     if use_vintage_mccormick
-                                    else vintage_carbon[bus, k]
-                                    * layer_discharge[bus, k, t]
+                                    else (
+                                        pcfg.initial_carbon_intensity
+                                        if use_layered_system and k == 0
+                                        else float(scenario.grid_carbon_t_per_mwh[k - 1])
+                                        if use_layered_system
+                                        else vintage_carbon[bus, k]
+                                    ) * layer_discharge[bus, k, t]
                                 )
                                 for k in layers
                             )
@@ -1745,6 +2137,15 @@ class StoragePlanningOracle:
                                 incoming_power_upper,
                                 subtree_absorbed(bus, t) + subtree_injected(bus, t),
                             )
+                            # At a leaf there are no child reverse-in or forward-
+                            # out terms. Summed active balance therefore gives
+                            # incoming sources = local demand + storage charge
+                            # exactly; including possible local injection in the
+                            # product bound only weakens the carbon envelope.
+                            if not children[bus]:
+                                incoming_power_upper = min(
+                                    incoming_power_upper, absorbed_at(bus, t)
+                                )
                         incoming_power_var = model.addVar(
                             lb=0.0,
                             ub=incoming_power_upper,
@@ -1757,31 +2158,58 @@ class StoragePlanningOracle:
                         )
                         model.addCons(incoming_power_var == total_incoming_power)
                         model.addCons(incoming_carbon_var == total_incoming_carbon)
-                        _add_mccormick_envelope(
-                            model,
-                            incoming_carbon_var,
-                            nodal_carbon[bus, t],
-                            incoming_power_var,
-                            pcfg.carbon_intensity_max,
-                            incoming_power_upper,
-                        )
+                        if use_binned_storage:
+                            add_piecewise_carbon_product(
+                                incoming_carbon_var, bus, t, incoming_power_var,
+                                incoming_power_upper,
+                                f"pw_incoming[{sid},{bus},{t}]",
+                            )
+                        else:
+                            _add_mccormick_envelope(
+                                model, incoming_carbon_var, nodal_carbon[bus, t],
+                                incoming_power_var, pcfg.carbon_intensity_max,
+                                incoming_power_upper,
+                            )
                     else:
                         model.addCons(
                             nodal_carbon[bus, t] * total_incoming_power
                             == total_incoming_carbon
                         )
                     cap = pcfg.dc_carbon_cap if bus == feeder.data_center_bus else pcfg.other_bus_carbon_cap
-                    slack = carbon_slack[bus, t] if allow_carbon_slack else 0.0
-                    model.addCons(nodal_carbon[bus, t] <= cap + slack)
-                    if allow_carbon_slack:
+                    if allow_carbon_slack and ccfg.carbon_price_dollars_per_t > 0.0:
+                        # Price physical excess emissions (tCO2 per interval),
+                        # not a dimensionless intensity slack.  The legacy
+                        # intensity penalty can overwhelm annualized battery
+                        # capex merely because its coefficient is tied to a
+                        # big-M scale.  This form has a stable economic meaning:
+                        # incoming_carbon - cap * incoming_energy is the excess
+                        # tonnes attributable to this bus in the interval.
+                        excess = model.addVar(
+                            lb=0.0, name=f"nodal_carbon_excess[{sid},{bus},{t}]"
+                        )
+                        model.addCons(
+                            total_incoming_carbon
+                            <= cap * total_incoming_power + excess
+                        )
                         carbon_slack_terms.append(
                             scenario_weight
                             * annual_blocks
-                            * ccfg.validation_carbon_slack_dollars
-                            * carbon_slack[bus, t]
+                            * ccfg.carbon_price_dollars_per_t
+                            * excess
+                            * dt
                         )
+                    else:
+                        slack = carbon_slack[bus, t] if allow_carbon_slack else 0.0
+                        model.addCons(nodal_carbon[bus, t] <= cap + slack)
+                        if allow_carbon_slack:
+                            carbon_slack_terms.append(
+                                scenario_weight
+                                * annual_blocks
+                                * ccfg.validation_carbon_slack_dollars
+                                * carbon_slack[bus, t]
+                            )
 
-                if use_system_average:
+                if use_system_boundary:
                     system_pv = quicksum(
                         pv[bus, phase, t] for bus, phase in node_phases
                     )
@@ -1797,10 +2225,22 @@ class StoragePlanningOracle:
                     system_carbon = (
                         float(scenario.grid_carbon_t_per_mwh[t]) * grid[t]
                         + 0.72 * generator[t]
-                        + quicksum(
-                            aggregate_discharge_carbon[bus, t]
-                            for bus in candidates
-                        )
+                        + (0.0 if storage_disabled else (
+                            quicksum(
+                                aggregate_discharge_carbon[bus, t]
+                                for bus in candidates
+                            )
+                            if use_system_average
+                            else quicksum(
+                                (
+                                    pcfg.initial_carbon_intensity
+                                    if k == 0
+                                    else float(scenario.grid_carbon_t_per_mwh[k - 1])
+                                ) * layer_discharge[bus, k, t]
+                                for bus in candidates
+                                for k in layers
+                            )
+                        ))
                     )
                     system_power_upper = (
                         pcfg.grid_limit_mw
@@ -1808,7 +2248,14 @@ class StoragePlanningOracle:
                         + float(scenario.pv_available_mw[t].sum())
                         + len(candidates) * pcfg.max_power_mw
                     )
-                    if ccfg.carbon_price_dollars_per_t > 0.0:
+                    if pcfg.carbon_cap_scope == "horizon":
+                        # Preserve hourly carbon physics, but defer compliance
+                        # until all interval carbon mass and delivered energy
+                        # have been summed over the scenario horizon.
+                        horizon_carbon_terms.append(system_carbon * dt)
+                        horizon_energy_terms.append(system_power * dt)
+                        horizon_energy_upper += system_power_upper * dt
+                    elif ccfg.carbon_price_dollars_per_t > 0.0:
                         # Excess carbon in tonnes per hour: system_carbon is an
                         # intensity times a power, so the difference is already
                         # t/h and needs no big-M to scale it. Priced with dt, as
@@ -1860,6 +2307,54 @@ class StoragePlanningOracle:
                     + ccfg.shedding_dollars_per_mwh * shed[t]
                 )
                 operating_terms.append(scenario_weight * annual_blocks * interval_cost * dt)
+
+            if use_system_boundary and pcfg.carbon_cap_scope == "horizon":
+                horizon_carbon = quicksum(horizon_carbon_terms)
+                horizon_energy = quicksum(horizon_energy_terms)
+                if ccfg.carbon_price_dollars_per_t > 0.0:
+                    # This variable is tonnes of CO2 per scenario block, unlike
+                    # the legacy dimensionless intensity slack. Its price is
+                    # therefore directly interpretable in dollars per tonne.
+                    excess = model.addVar(
+                        lb=0.0, name=f"carbon_budget_excess[{sid}]"
+                    )
+                    model.addCons(
+                        horizon_carbon
+                        <= pcfg.dc_carbon_cap * horizon_energy + excess,
+                        name=f"system_carbon_budget[{sid}]",
+                    )
+                    carbon_slack_terms.append(
+                        scenario_weight
+                        * annual_blocks
+                        * ccfg.carbon_price_dollars_per_t
+                        * excess
+                    )
+                elif allow_carbon_slack:
+                    # Backward-compatible emergency slack. It is dimensionless
+                    # intensity slack, scaled by a valid constant upper bound;
+                    # priced-excess experiments should use carbon_price instead.
+                    slack = model.addVar(
+                        lb=0.0,
+                        ub=pcfg.carbon_intensity_max,
+                        name=f"carbon_budget_slack[{sid}]",
+                    )
+                    model.addCons(
+                        horizon_carbon
+                        <= pcfg.dc_carbon_cap * horizon_energy
+                        + horizon_energy_upper * slack,
+                        name=f"system_carbon_budget[{sid}]",
+                    )
+                    carbon_slack_terms.append(
+                        scenario_weight
+                        * annual_blocks
+                        * ccfg.validation_carbon_slack_dollars
+                        * slack
+                    )
+                else:
+                    model.addCons(
+                        horizon_carbon <= pcfg.dc_carbon_cap * horizon_energy,
+                        name=f"system_carbon_budget[{sid}]",
+                    )
 
         operating = ccfg.demand_dollars_per_mw_year * peak_grid + quicksum(operating_terms)
         carbon_slack_cost = quicksum(carbon_slack_terms) if carbon_slack_terms else 0.0

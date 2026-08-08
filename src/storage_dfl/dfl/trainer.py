@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from math import isfinite
 from typing import Any
 
@@ -11,8 +11,14 @@ import torch
 from storage_dfl.config import DFLConfig
 from storage_dfl.data import Scenario, ScenarioCodec, ScenarioPool
 from storage_dfl.dfl.support import DirectSupportPolicy
+from storage_dfl.dfl.selection import select_scenarios
 from storage_dfl.models import ConditionalGenerator
-from storage_dfl.planning import PlanningJob, PlanningResult, StoragePlanningOracle
+from storage_dfl.planning import (
+    PlanningJob,
+    PlanningResult,
+    StorageDesign,
+    StoragePlanningOracle,
+)
 
 
 @dataclass(frozen=True)
@@ -84,19 +90,45 @@ def _decode_support(
 INFEASIBLE_LOSS = 1.0e12
 
 
-def _converged(result: PlanningResult) -> bool:
-    """Return whether an objective is supported by a valid termination bound."""
+def _converged(
+    result: PlanningResult,
+    accepted_relative_gap: float | None = None,
+) -> bool:
+    """Return whether an objective has a sufficiently tight valid bound.
 
-    return (
+    A solver can hit its time or memory limit immediately after proving a gap
+    that is already good enough for training.  The status string alone would
+    discard that certified epsilon-optimal incumbent, so accept it whenever its
+    reported gap is within the explicitly requested training tolerance.
+    """
+
+    base = (
         result.feasible
         and isfinite(result.objective)
-        and result.status in {"optimal", "gaplimit"}
         and isfinite(result.relative_gap)
+    )
+    if not base:
+        return False
+    if result.status in {"optimal", "gaplimit"}:
+        return True
+    return (
+        accepted_relative_gap is not None
+        and accepted_relative_gap > 0.0
+        and result.relative_gap <= accepted_relative_gap
     )
 
 
-def _finite_loss(result: PlanningResult, *, require_converged: bool = False) -> float:
-    usable = _converged(result) if require_converged else result.feasible
+def _finite_loss(
+    result: PlanningResult,
+    *,
+    require_converged: bool = False,
+    accepted_relative_gap: float | None = None,
+) -> float:
+    usable = (
+        _converged(result, accepted_relative_gap)
+        if require_converged
+        else result.feasible
+    )
     return float(result.objective) if usable and isfinite(result.objective) else INFEASIBLE_LOSS
 
 
@@ -117,6 +149,68 @@ def _design_summary(result: PlanningResult) -> str:
     power = sum(float(result.design.power_mw[bus]) for bus in installed)
     energy = sum(float(result.design.energy_mwh[bus]) for bus in installed)
     return f"installed={installed}, P={power:.4f} MW, E={energy:.4f} MWh"
+
+
+def _aggregate_fixed_design_dispatches(
+    results: list[PlanningResult],
+    weights: tuple[float, ...],
+    design: StorageDesign,
+    demand_dollars_per_mw_year: float,
+    accepted_relative_gap: float,
+) -> PlanningResult:
+    """Aggregate separate exact dispatches into the original validation loss.
+
+    This avoids constructing one multi-scenario nonconvex model. Investment is
+    paid once, interval costs are weighted, and the annual demand charge uses
+    the maximum peak across validation scenarios, matching the joint model.
+    """
+
+    normalized = np.asarray(weights, dtype=float)
+    normalized /= normalized.sum()
+    names = tuple(name for result in results for name in result.scenario_names)
+    if not results or any(not result.feasible for result in results):
+        return PlanningResult(
+            status="scenario_limit",
+            objective=float("inf"),
+            investment_cost=float("inf"),
+            operating_cost=float("inf"),
+            carbon_slack_cost=float("inf"),
+            peak_grid_mw=float("inf"),
+            design=design,
+            scenario_names=names,
+            solve_time_seconds=sum(result.solve_time_seconds for result in results),
+            relative_gap=float("inf"),
+        )
+    peak = max(float(result.peak_grid_mw) for result in results)
+    non_demand_operating = sum(
+        float(weight)
+        * (
+            float(result.operating_cost)
+            - demand_dollars_per_mw_year * float(result.peak_grid_mw)
+        )
+        for weight, result in zip(normalized, results, strict=True)
+    )
+    operating = demand_dollars_per_mw_year * peak + non_demand_operating
+    carbon = sum(
+        float(weight) * float(result.carbon_slack_cost)
+        for weight, result in zip(normalized, results, strict=True)
+    )
+    investment = float(results[0].investment_cost)
+    bounded = all(
+        _converged(result, accepted_relative_gap) for result in results
+    )
+    return PlanningResult(
+        status="optimal" if bounded else "scenario_limit",
+        objective=investment + operating + carbon,
+        investment_cost=investment,
+        operating_cost=operating,
+        carbon_slack_cost=carbon,
+        peak_grid_mw=peak,
+        design=design,
+        scenario_names=names,
+        solve_time_seconds=sum(result.solve_time_seconds for result in results),
+        relative_gap=max(float(result.relative_gap) for result in results),
+    )
 
 
 def _rank_advantages(
@@ -208,6 +302,28 @@ def train_direct_generator(
     estimator.  SCIP is never differentiated and can be replaced independently.
     """
 
+    validation_gap = (
+        config.validation_relative_gap
+        if config.validation_relative_gap > 0.0
+        else config.training_relative_gap
+    )
+    validation_oracle = oracle
+    if validation_gap > 0.0 and abs(
+        validation_gap - oracle.planning.solver_relative_gap
+    ) > 1.0e-12:
+        validation_oracle = StoragePlanningOracle(
+            oracle.feeder,
+            replace(oracle.planning, solver_relative_gap=validation_gap),
+            oracle.costs,
+            oracle.data,
+            oracle.data_center,
+        )
+        print(
+            f"fixed-design reward dispatches at relative gap {validation_gap:g}; "
+            f"planning remains at {oracle.planning.solver_relative_gap:g}",
+            flush=True,
+        )
+
     device = resolve_device(config.device)
     torch.manual_seed(seed + 1)
     if device.type == "cuda":
@@ -229,11 +345,13 @@ def train_direct_generator(
     # Keep the downstream reward distribution fixed across policy updates.
     # Rotating contiguous windows made epoch losses incomparable and, in the
     # price-regime dataset, could expose an epoch to only one tariff block.
-    validation_indices = codec.support_indices(
+    fixed_validation_scenarios, fixed_validation_weights, _ = select_scenarios(
+        config.evaluation_selection_rule,
         observed_pool,
+        codec,
         min(config.validation_batch_size, len(observed_pool.scenarios)),
+        seed=seed,
     )
-    fixed_validation_scenarios = observed_pool.subset(validation_indices.tolist())
 
     # Displacement of the policy mean from where it started. Without it a run
     # gives no way to tell "learned something" from "never moved": the score-
@@ -279,7 +397,8 @@ def train_direct_generator(
 
         planning_started = time.perf_counter()
         plans = oracle.solve_many(
-            [PlanningJob(generated, weights) for _, generated, weights in samples]
+            [PlanningJob(generated, weights) for _, generated, weights in samples],
+            allow_carbon_slack=config.training_allow_carbon_slack,
         )
         planning_wall_seconds = time.perf_counter() - planning_started
         # The validations of one epoch share the fixed scenario set and differ
@@ -288,22 +407,32 @@ def train_direct_generator(
         # one idle for that half of the epoch.
         validated_indices = [index for index, plan in enumerate(plans) if plan.feasible]
         validation_started = time.perf_counter()
-        validations = dict(
-            zip(
-                validated_indices,
-                oracle.solve_many(
-                    [
-                        PlanningJob(
-                            validation_scenarios, fixed_design=plans[index].design
-                        )
-                        for index in validated_indices
-                    ],
-                    allow_carbon_slack=True,
-                    use_cache=True,
-                ),
-                strict=True,
-            )
+        # A joint exact model with two validation scenarios already exceeded
+        # the per-process memory limit. Dispatch candidate x scenario jobs as
+        # independent exact models, then reconstruct the same weighted objective.
+        validation_jobs = [
+            PlanningJob((scenario,), fixed_design=plans[index].design)
+            for index in validated_indices
+            for scenario in validation_scenarios
+        ]
+        dispatches = validation_oracle.solve_many(
+            validation_jobs,
+            allow_carbon_slack=True,
+            use_cache=True,
         )
+        validation_count = len(validation_scenarios)
+        validations = {
+            index: _aggregate_fixed_design_dispatches(
+                dispatches[
+                    offset * validation_count : (offset + 1) * validation_count
+                ],
+                fixed_validation_weights,
+                plans[index].design,
+                validation_oracle.costs.demand_dollars_per_mw_year,
+                validation_gap,
+            )
+            for offset, index in enumerate(validated_indices)
+        }
         validation_wall_seconds = time.perf_counter() - validation_started
         for sample_index, ((sample, generated, weights), plan) in enumerate(
             zip(samples, plans, strict=True)
@@ -311,7 +440,11 @@ def train_direct_generator(
             # An infeasible plan has no design to validate, so it stands in for
             # its own validation, as it did when the two solves were adjacent.
             validation = validations.get(sample_index, plan)
-            decision_loss = _finite_loss(validation, require_converged=True)
+            decision_loss = _finite_loss(
+                validation,
+                require_converged=True,
+                accepted_relative_gap=validation_gap,
+            )
             if decision_loss >= INFEASIBLE_LOSS:
                 infeasible_samples += 1
                 infeasible_in_epoch += 1
@@ -320,8 +453,9 @@ def train_direct_generator(
             print(
                 f"DFL epoch {epoch + 1}/{config.epochs} sample "
                 f"{sample_index + 1}/{max(1, config.policy_samples_per_epoch)}: "
-                f"plan={plan.status}/{plan.objective:.6g}, "
-                f"validation={validation.status}/{validation.objective:.6g}; "
+                f"plan={plan.status}/{plan.objective:.6g} gap={plan.relative_gap:.4g}, "
+                f"validation={validation.status}/{validation.objective:.6g} "
+                f"gap={validation.relative_gap:.4g}; "
                 f"{_design_summary(plan)}",
                 flush=True,
             )
@@ -390,16 +524,23 @@ def train_direct_generator(
         else:
             epochs_without_material_improvement += 1
 
-        for sample, generated, weights, plan, _, decision_loss in candidates:
-            if plan.feasible and decision_loss < INFEASIBLE_LOSS:
+        for (
+            finalist_sample,
+            finalist_generated,
+            finalist_weights,
+            finalist_plan,
+            _,
+            finalist_loss,
+        ) in candidates:
+            if finalist_plan.feasible and finalist_loss < INFEASIBLE_LOSS:
                 _retain_finalist(
                     finalists,
                     _ReinforceFinalist(
-                        scenarios=generated,
-                        weights=weights,
-                        latent=sample.latent.cpu().numpy().copy(),
-                        plan=plan,
-                        validation_loss=float(decision_loss),
+                        scenarios=finalist_generated,
+                        weights=finalist_weights,
+                        latent=finalist_sample.latent.cpu().numpy().copy(),
+                        plan=finalist_plan,
+                        validation_loss=float(finalist_loss),
                         source=f"epoch {epoch + 1} sample",
                     ),
                     config.reinforce_finalists,
@@ -520,7 +661,8 @@ def train_direct_generator(
             "that the oracle can produce a bounded incumbent before training: raise "
             "planning.solver_time_limit_seconds, relax planning.solver_relative_gap, "
             "or fall back along carbon_formulation "
-            "(system_average -> aggregate_mccormick -> mccormick -> exact)."
+            "(system_average/layered_system -> aggregate_mccormick -> "
+            "mccormick -> exact)."
         )
 
     deterministic_latent, deterministic_weights_tensor = policy.deterministic()
@@ -533,13 +675,17 @@ def train_direct_generator(
     )
     deterministic_weights = tuple(float(value) for value in deterministic_weights_tensor.cpu())
     print("DFL final: solving deterministic planning model...", flush=True)
-    deterministic_plan = oracle.solve(deterministic_scenarios, weights=deterministic_weights)
-    final_validation_indices = codec.support_indices(
-        observed_pool,
-        min(config.final_validation_size, len(observed_pool.scenarios)),
+    deterministic_plan = oracle.solve(
+        deterministic_scenarios,
+        weights=deterministic_weights,
+        allow_carbon_slack=config.training_allow_carbon_slack,
     )
-    final_validation_scenarios = observed_pool.subset(
-        final_validation_indices.tolist()
+    final_validation_scenarios, final_validation_weights, _ = select_scenarios(
+        config.evaluation_selection_rule,
+        observed_pool,
+        codec,
+        min(config.final_validation_size, len(observed_pool.scenarios)),
+        seed=seed,
     )
     candidate_by_signature: dict[tuple, _ReinforceFinalist] = {}
     if deterministic_plan.feasible:
@@ -561,13 +707,26 @@ def train_direct_generator(
 
     final_results: list[tuple[_ReinforceFinalist, PlanningResult, float]] = []
     for finalist_index, finalist in enumerate(candidate_by_signature.values(), start=1):
-        validation = oracle.solve(
-            final_validation_scenarios,
-            fixed_design=finalist.plan.design,
+        final_dispatches = validation_oracle.solve_many(
+            [
+                PlanningJob((scenario,), fixed_design=finalist.plan.design)
+                for scenario in final_validation_scenarios
+            ],
             allow_carbon_slack=True,
             use_cache=True,
         )
-        final_loss = _finite_loss(validation, require_converged=True)
+        validation = _aggregate_fixed_design_dispatches(
+            final_dispatches,
+            final_validation_weights,
+            finalist.plan.design,
+            validation_oracle.costs.demand_dollars_per_mw_year,
+            validation_gap,
+        )
+        final_loss = _finite_loss(
+            validation,
+            require_converged=True,
+            accepted_relative_gap=validation_gap,
+        )
         print(
             f"DFL finalist {finalist_index}/{len(candidate_by_signature)} "
             f"({finalist.source}): validation={validation.status}/"
@@ -628,7 +787,7 @@ def train_direct_generator(
             f"DFL planning produced no feasible solution: status={chosen_plan.status!r}, "
             f"seconds={chosen_plan.solve_time_seconds:.1f}."
         )
-    if not _converged(full_validation):
+    if not _converged(full_validation, validation_gap):
         raise RuntimeError(
             f"DFL validation did not converge: status={full_validation.status!r}, "
             f"seconds={full_validation.solve_time_seconds:.1f}."

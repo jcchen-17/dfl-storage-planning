@@ -37,6 +37,7 @@ class CVAEConfig:
     net_load_weight: float = 0.15
     net_peak_weight: float = 0.20
     price_spread_weight: float = 0.20
+    carbon_spread_weight: float = 0.20
 
     def field_weights(self) -> tuple[float, ...]:
         """Per-field reconstruction weights: P, Q, PV, workload, PUE, price, carbon.
@@ -155,6 +156,13 @@ class DFLConfig:
     # the method achieves under its own budget, and the number reported for it
     # is still measured exactly.
     training_relative_gap: float = 0.0
+    # Optional, looser certificate for the separate fixed-design validation
+    # dispatches used as REINFORCE rewards. Zero inherits training_relative_gap.
+    validation_relative_gap: float = 0.0
+    # Use the model's priced physical carbon-excess variable during both
+    # support planning and common validation. This avoids making every policy
+    # sample infeasible under an unreachable hourly hard cap.
+    training_allow_carbon_slack: bool = False
     candidate_pool_size: int = 12
     bo_initial_evaluations: int = 6
     bo_iterations: int = 6
@@ -174,6 +182,12 @@ class DFLConfig:
     # movements are below the resolution at which candidates are ranked.
     early_stopping_patience: int = 0
     early_stopping_min_epochs: int = 20
+    # How fixed validation and reported test subsets approximate the held-out
+    # distribution. ``farthest`` reproduces historical runs and assigns uniform
+    # weights to deliberately extreme points. ``kmeans`` uses cluster medoids
+    # with cluster-mass weights and is the statistically meaningful default for
+    # dataset v2 configurations.
+    evaluation_selection_rule: str = "farthest"
 
 
 @dataclass(frozen=True)
@@ -195,6 +209,11 @@ class DataCenterConfig:
     non_it_mw: float = 0.03
     it_base_mw: float = 0.12
     it_workload_mw: float = 0.30
+    # Maximum number of intervals by which unfinished arrivals may be deferred.
+    # Zero fixes processed work to the arrival trace and is useful for measuring
+    # how much workload shifting substitutes for storage.
+    workload_max_delay_hours: int = 2
+    workload_processing_upper: float = 1.20
 
     def power_mw(self, pue: float, processed: float) -> float:
         return self.non_it_mw + pue * (self.it_base_mw + self.it_workload_mw * processed)
@@ -282,6 +301,17 @@ class PlanningConfig:
     # solving once with a NON-binding cap under both settings: the objectives
     # must match, which shows the tighter bound cut off nothing feasible.
     carbon_envelope_bound: str = "line_rating"
+    # Temporal compliance boundary for system-average and layered-system carbon
+    # accounting. "hourly" applies the target to every interval; "horizon"
+    # applies one energy-weighted budget after summing exact interval emissions.
+    carbon_cap_scope: str = "hourly"
+    # "shared_feeder" co-optimizes location and lets discharge serve any load.
+    # "dedicated_dc" fixes installation at the data-center bus, sizes P/E, and
+    # reserves every unit of storage discharge for data-center consumption.
+    # "fixed_dc_siting" fixes installation at the data-center bus and sizes
+    # P/E, but keeps the physical feeder-wide COPF power balance.  It is the
+    # appropriate mode for the exact nodal-carbon/vintage benchmark.
+    storage_service_mode: str = "shared_feeder"
 
 
 @dataclass(frozen=True)
@@ -314,6 +344,9 @@ class CostConfig:
     # can cite something real: roughly 185 $/tCO2 for the US social cost of
     # carbon, or 50-100 $/tCO2 for traded credits.
     carbon_price_dollars_per_t: float = 0.0
+    # Multiplies site, power and energy CAPEX together for a declared
+    # sensitivity case. Operating, degradation and carbon prices are unchanged.
+    battery_capex_scale: float = 1.0
 
 
 @dataclass(frozen=True)

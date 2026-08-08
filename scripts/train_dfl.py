@@ -1,30 +1,24 @@
 import argparse
 
-from storage_dfl.models import GENERATOR_KINDS
 from storage_dfl.stages import train_dfl_stage
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train decision-focused scenario supports.")
-    parser.add_argument("--config", default="configs/demo.yaml")
-    parser.add_argument(
-        "--method",
-        choices=("reinforce", "scenario_bo"),
-        help="Override dfl.method without editing the YAML file.",
-    )
-    parser.add_argument(
-        "--generator",
-        choices=GENERATOR_KINDS,
-        help="Use the support learned on top of this generator's checkpoint.",
-    )
+    parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered.yaml")
     parser.add_argument("--no-tensorboard", action="store_true")
+    parser.add_argument(
+        "--capex-scale",
+        type=float,
+        default=1.0,
+        help="scale site, power and energy investment costs together",
+    )
     args = parser.parse_args()
     print(f"Starting DFL training with {args.config}...", flush=True)
     result = train_dfl_stage(
         args.config,
         tensorboard=not args.no_tensorboard,
-        method_override=args.method,
-        generator_override=args.generator,
+        battery_capex_scale=args.capex_scale,
     )
     print(f"generator: {result['generator']}")
     print(f"method: {result['method']}")
