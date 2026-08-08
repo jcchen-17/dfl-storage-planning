@@ -357,6 +357,17 @@ def main() -> None:
     )
     parser.add_argument("--output-dir", default="outputs/k_sweep")
     args = parser.parse_args()
+    # --seeds only repeats the random rule, and random is not in the default
+    # rule list, so asking for repetitions without asking for random silently
+    # produces a sweep with no random rows at all -- and random is the baseline
+    # whose spread a learned selector is measured against.
+    if args.seeds > 1 and "random" not in args.rules:
+        raise SystemExit(
+            f"--seeds {args.seeds} repeats the 'random' rule, but --rules is "
+            f"{args.rules} and does not include it, so the flag would do "
+            "nothing.\n"
+            "Add random to --rules, or drop --seeds."
+        )
 
     config = load_config(args.config)
     if args.source == "historical" and "initial" in args.rules:
