@@ -88,19 +88,27 @@ generator:
 
 dfl:
   method: reinforce
-  # Solver tolerance inside the training loop; evaluation keeps
-  # planning.solver_relative_gap, now 1e-4.
+  # Zero: the loop runs at planning.solver_relative_gap, same as everything
+  # else. The mechanism to loosen it stays available and is deliberately unused.
   #
-  # The reported tolerance had to come down to 1e-4 because at 1e-3 the ranking
-  # of two rules reversed on nothing but where the solver stopped. But at 1e-4 a
-  # single K=1 planning solve has been seen to run past 900 s without
-  # converging, and a run does hundreds of them -- one per policy sample per
-  # epoch -- so the loop would become unbounded in time. It does not need the
-  # precision: the score-function estimator only needs each epoch's samples
-  # ranked roughly right, and averages over epochs.
+  # It was set to 1e-3 on the theory that training only needs each epoch's
+  # samples ranked roughly right, so it could trade precision for speed and
+  # avoid the occasional K=1 solve that runs past 900 s at 1e-4. Measured, both
+  # halves of that were wrong. The ranking signal is the spread of validation
+  # objectives within an epoch, about 1,300-1,500 on a 1.7M objective, and 1e-3
+  # leaves 1,700 unresolved -- the fixed-design validation solve stops right at
+  # the tolerance rather than converging past it, as had been assumed. So the
+  # policy was ranking samples by solver noise.
   #
-  # Set to 0.0 to run the loop at the reported tolerance instead.
-  training_relative_gap: 0.001
+  # And the saving was not there either:
+  #   gap     planning   validation   unresolved
+  #   1e-3      5.1 s      11.8 s        1,700
+  #   3e-4      5.8 s      12.0 s          356
+  #   1e-4      5.9 s      14.3 s          105
+  # about 20% per sample to go from noise louder than the signal to noise at 8%
+  # of it. The 900 s case is a rare instance, not the common one, and paying for
+  # it across every solve was the wrong trade.
+  training_relative_gap: 0.0
   # REINFORCE learns this many representative 48 h latent scenarios and their
   # weights; every candidate design is ranked on a fixed validation set. The
   # conditioning contexts are farthest-point anchors over
