@@ -1,0 +1,379 @@
+% =====================================================================
+% Revised model and method sections.
+%
+% Replaces: the nodal carbon-cap treatment at the end of Sec. II-B-6, and
+% adds Sec. III. Notation follows the existing nomenclature; new symbols
+% are listed at the end of this file for merging into it.
+% =====================================================================
+
+\section{Carbon-Constrained Shared-Storage Planning}
+\label{sec:model}
+
+% ---------------------------------------------------------------------
+\subsection{Carbon Target and Its Economic Treatment}
+\label{sec:carbon_target}
+
+The facility is held to a carbon-intensity target
+$\overline{\mathscr{w}}$ on delivered power. Writing the system carbon
+flow and the system power at interval $(s,d,t)$ as
+\begin{align}
+\Phi_{s,d,t}
+&=
+\mathscr{w}_{s,d,t}^{\mathrm{grid}}P_{s,d,t}^{\mathrm{grid}}
++\sum_{i\in\mathcal{N}}\sum_{g\in\mathcal{G}_i}
+\mathscr{w}_{g}^{G}P_{g,s,d,t}
++\sum_{i\in\mathcal{N}^{\mathrm{es}}}
+R_{i,s,d,t}^{\mathrm{es,dc}},
+\label{eq:system_carbon}\\
+\Psi_{s,d,t}
+&=
+P_{s,d,t}^{\mathrm{grid}}
++\sum_{i\in\mathcal{N}}\sum_{g\in\mathcal{G}_i}P_{g,s,d,t}
++\sum_{i\in\mathcal{N}}P_{i,s,d,t}^{\mathrm{PV}}
++\sum_{i\in\mathcal{N}^{\mathrm{es}}}P_{i,s,d,t}^{\mathrm{es,dc}},
+\label{eq:system_power}
+\end{align}
+the target requires
+$\Phi_{s,d,t}\leq\overline{\mathscr{w}}\Psi_{s,d,t}$, with
+$R_{i,s,d,t}^{\mathrm{es,dc}}$ given by \eqref{eq:storage_carbon_flow}
+so that the vintage structure of the stored energy enters the target
+directly.
+
+Imposing this as a hard constraint is unsatisfactory for planning. A
+target tight enough to influence the storage decision is, on this system,
+already tight enough to be unreachable in some intervals, and the
+planning problem then returns no design at all rather than an expensive
+one. We therefore admit an excess $\Xi_{s,d,t}\geq0$, measured in the
+same units as $\Phi_{s,d,t}$, and price it:
+\begin{equation}
+\Phi_{s,d,t}
+\leq
+\overline{\mathscr{w}}\Psi_{s,d,t}
++
+\Xi_{s,d,t}.
+\label{eq:carbon_target}
+\end{equation}
+The operating cost \eqref{eq:interval_cost} gains the term
+$c^{\mathrm{CO_2}}\Xi_{s,d,t}$, where $c^{\mathrm{CO_2}}$ is a price per
+unit of carbon emitted beyond the target.
+
+This differs from the usual big-$M$ relaxation, in which a dimensionless
+violation variable is scaled by a bound on system power before entering
+the constraint. Under that formulation the implied price per unit of
+carbon depends on the numerical bound rather than on any modelling
+assumption, so the value attributed to storage moves when the bound is
+re-derived. Pricing $\Xi_{s,d,t}$ in physical units removes that
+dependence: $c^{\mathrm{CO_2}}$ is an assumption of the study, stated
+once, and the storage value it produces varies smoothly with the target
+$\overline{\mathscr{w}}$ rather than jumping when the target crosses
+feasibility.
+
+The formulation admits both limiting cases. Letting
+$c^{\mathrm{CO_2}}\!\to\!\infty$ recovers the hard cap wherever it is
+attainable, and $c^{\mathrm{CO_2}}\!=\!0$ recovers the carbon-agnostic
+planning problem, so the target's influence on siting and sizing can be
+traced continuously between them.
+
+% ---------------------------------------------------------------------
+\subsection{Where the Storage Value Originates}
+\label{sec:value_origin}
+
+Combining \eqref{eq:carbon_target} with \eqref{eq:storage_carbon_flow}
+isolates what storage contributes to compliance. Collecting the terms
+that do not involve storage discharge into
+\begin{equation}
+D_{s,d,t}
+=
+\Phi_{s,d,t}^{\setminus\mathrm{es}}
+-
+\overline{\mathscr{w}}\,\Psi_{s,d,t}^{\setminus\mathrm{es}},
+\label{eq:carbon_gap_system}
+\end{equation}
+the target becomes
+\begin{equation}
+\sum_{i\in\mathcal{N}^{\mathrm{es}}}\sum_{k\in\mathcal{K}}
+\bigl(\overline{\mathscr{w}}-\mathscr{w}_{i,k,s}^{\mathrm{es}}\bigr)
+P_{i,k,s,d,t}^{\mathrm{es,dc}}
++
+\Xi_{s,d,t}
+\geq
+D_{s,d,t}.
+\label{eq:carbon_gap_priced}
+\end{equation}
+
+Equation \eqref{eq:carbon_gap_priced} states the mechanism the model is
+built to represent. A positive $D_{s,d,t}$ is a compliance deficit that
+must be met either by discharging stored energy whose vintage intensity
+is below the target, at a rate weighted by how far below it lies, or by
+paying for the excess. The planner therefore has an incentive to charge
+during low-intensity intervals specifically so that the resulting
+vintages can be discharged when $D_{s,d,t}$ is positive, and the value of
+a given installation depends on the intensities of the vintages it can
+hold rather than on its energy capacity alone. A well-mixed inventory
+model cannot express this, since it assigns a single intensity to all
+stored energy and so cannot distinguish a battery charged at the cleanest
+hours from one charged at the dirtiest.
+
+% =====================================================================
+\section{Decision-Focused Scenario Selection}
+\label{sec:dfl}
+
+% ---------------------------------------------------------------------
+\subsection{The Selection Problem}
+\label{sec:selection_problem}
+
+Let $\xi$ denote an operating scenario---a joint realization of load,
+PV availability, workload arrivals, grid carbon intensity and prices over
+the planning horizon---distributed as $\mathbb{P}$. Writing
+$c(\boldsymbol{x}^{\mathrm{pl}},\xi)$ for the optimal operating cost of
+the second stage under design $\boldsymbol{x}^{\mathrm{pl}}$ and scenario
+$\xi$, the planning problem of interest is
+\begin{equation}
+\min_{\boldsymbol{x}^{\mathrm{pl}}}
+\quad
+C^{\mathrm{inv}}(\boldsymbol{x}^{\mathrm{pl}})
++
+\mathbb{E}_{\xi\sim\mathbb{P}}
+\bigl[c(\boldsymbol{x}^{\mathrm{pl}},\xi)\bigr].
+\label{eq:true_problem}
+\end{equation}
+Each evaluation of $c$ requires solving a mixed-integer program over the
+full horizon, so \eqref{eq:true_problem} is solved in practice on a
+support of $K$ scenarios $\mathcal{X}=\{\xi_1,\dots,\xi_K\}$ with weights
+$\boldsymbol{\pi}\in\Delta^{K-1}$:
+\begin{equation}
+\boldsymbol{x}^{\star}(\mathcal{X},\boldsymbol{\pi})
+\in
+\argmin_{\boldsymbol{x}^{\mathrm{pl}}}
+\;
+C^{\mathrm{inv}}(\boldsymbol{x}^{\mathrm{pl}})
++
+\sum_{k=1}^{K}\pi_k\,c(\boldsymbol{x}^{\mathrm{pl}},\xi_k).
+\label{eq:support_problem}
+\end{equation}
+
+The support is conventionally chosen to represent $\mathbb{P}$ in
+distribution, by clustering or by maximizing coverage. That criterion is
+indifferent to what the support is for. Two supports that are equally
+representative in a distributional sense can induce designs of very
+different quality, because \eqref{eq:support_problem} is sensitive only
+to the features of $\xi$ that bind its constraints. We therefore select
+the support by the quality of the decision it induces:
+\begin{equation}
+\min_{\mathcal{X},\boldsymbol{\pi}}
+\quad
+\mathcal{L}(\mathcal{X},\boldsymbol{\pi})
+:=
+\mathbb{E}_{\xi\sim\mathbb{P}}
+\bigl[
+c\bigl(\boldsymbol{x}^{\star}(\mathcal{X},\boldsymbol{\pi}),\xi\bigr)
+\bigr].
+\label{eq:decision_loss}
+\end{equation}
+The support enters \eqref{eq:decision_loss} only through the design it
+produces; a scenario that is unusual but does not change
+$\boldsymbol{x}^{\star}$ has no effect on the loss.
+
+% ---------------------------------------------------------------------
+\subsection{Generative Parameterization}
+\label{sec:parameterization}
+
+Searching over $\mathcal{X}$ directly is unattractive: the scenarios are
+high-dimensional and must remain physically admissible, and restricting
+the search to observed scenarios reduces \eqref{eq:decision_loss} to a
+combinatorial subset selection over the historical record.
+
+We instead search in the latent space of a conditional generator
+$G_{\phi}$ trained beforehand on the historical pool, which maps a latent
+$\boldsymbol{z}\in\mathbb{R}^{n_z}$ and a context
+$\boldsymbol{\omega}$ to a scenario. Writing
+$\boldsymbol{Z}=[\boldsymbol{z}_1,\dots,\boldsymbol{z}_K]$ and
+$\boldsymbol{\Omega}=[\boldsymbol{\omega}_1,\dots,\boldsymbol{\omega}_K]$,
+\begin{equation}
+\mathcal{X}(\boldsymbol{Z},\boldsymbol{\Omega})
+=
+\bigl\{
+G_{\phi}(\boldsymbol{z}_k,\boldsymbol{\omega}_k)
+\bigr\}_{k=1}^{K},
+\label{eq:generated_support}
+\end{equation}
+and the weights are parameterized by logits $\boldsymbol{\lambda}$ through
+$\boldsymbol{\pi}=\mathrm{softmax}(\boldsymbol{\lambda})$. The generator
+is held fixed; only $(\boldsymbol{Z},\boldsymbol{\lambda})$ are optimized.
+The support is thus free to leave the historical record while remaining on
+the manifold the generator learned, and the search is over $Kn_z$
+continuous variables rather than over subsets.
+
+The contexts $\boldsymbol{\Omega}$ are set from $K$ observed scenarios
+chosen by a coverage rule and then held fixed, which anchors each support
+member to a distinct region of the conditioning space. This is a
+restriction: any attribute of $\xi$ carried by the context rather than by
+the latent cannot be altered by the search, and the reachable set is
+correspondingly a neighbourhood of the anchors rather than the generator's
+full range.
+
+% ---------------------------------------------------------------------
+\subsection{Score-Function Optimization}
+\label{sec:score_function}
+
+The composition in \eqref{eq:decision_loss} is not differentiable in
+$(\boldsymbol{Z},\boldsymbol{\lambda})$. The map from support to design is
+the $\argmin$ of a mixed-integer program, so it is piecewise constant:
+almost everywhere its gradient vanishes, and where the active set changes
+it does not exist. Neither differentiating through the solver nor
+smoothing its optimality conditions applies once integer siting variables
+are present.
+
+We therefore treat the support as a random variable and optimize the
+expected loss. Let
+\begin{equation}
+q_{\boldsymbol{\theta}}(\boldsymbol{Z})
+=
+\mathcal{N}\bigl(\boldsymbol{Z};\boldsymbol{\mu},\sigma^2\boldsymbol{I}\bigr),
+\qquad
+\boldsymbol{\theta}=(\boldsymbol{\mu},\boldsymbol{\lambda}),
+\label{eq:policy}
+\end{equation}
+and minimize
+$\mathcal{J}(\boldsymbol{\theta})=
+\mathbb{E}_{\boldsymbol{Z}\sim q_{\boldsymbol{\theta}}}
+[\mathcal{L}(\mathcal{X}(\boldsymbol{Z},\boldsymbol{\Omega}),
+\boldsymbol{\pi})]$. The score-function identity gives
+\begin{equation}
+\nabla_{\boldsymbol{\theta}}\mathcal{J}
+=
+\mathbb{E}_{\boldsymbol{Z}\sim q_{\boldsymbol{\theta}}}
+\bigl[
+\mathcal{L}\,
+\nabla_{\boldsymbol{\theta}}\log q_{\boldsymbol{\theta}}(\boldsymbol{Z})
+\bigr],
+\label{eq:score_function}
+\end{equation}
+which requires only evaluations of $\mathcal{L}$, never its derivative.
+With $N$ samples per iteration and a baseline $b$ tracking the running
+mean of the loss, the estimator is
+\begin{equation}
+\widehat{\nabla_{\boldsymbol{\theta}}\mathcal{J}}
+=
+\frac{1}{N}\sum_{n=1}^{N}
+\bigl(\mathcal{L}^{(n)}-b\bigr)
+\nabla_{\boldsymbol{\theta}}
+\log q_{\boldsymbol{\theta}}(\boldsymbol{Z}^{(n)}).
+\label{eq:reinforce}
+\end{equation}
+The baseline leaves the estimator unbiased and reduces its variance,
+which matters here because each $\mathcal{L}^{(n)}$ costs one solve of
+\eqref{eq:support_problem} followed by a fixed-design evaluation, so $N$
+is small.
+
+The expectation in \eqref{eq:decision_loss} is replaced throughout
+training by an average over a fixed validation set
+$\mathcal{V}\subset\mathbb{P}$, held constant across iterations so that
+losses from different iterations are comparable, and disjoint from the
+test set on which results are reported.
+
+% ---------------------------------------------------------------------
+\subsection{Resolution Limits}
+\label{sec:resolution}
+
+Two properties of \eqref{eq:reinforce} deserve attention because they
+determine whether the procedure can work at all, independently of how it
+is tuned.
+
+First, the estimator ranks samples by $\mathcal{L}^{(n)}$, and each
+$\mathcal{L}^{(n)}$ is obtained from a mixed-integer solve terminated at a
+relative optimality gap $\epsilon$. Differences between samples smaller
+than $\epsilon\mathcal{L}$ are therefore not ordered by the solver but by
+where it happened to stop. If the spread of $\mathcal{L}^{(n)}$ within an
+iteration is comparable to $\epsilon\mathcal{L}$, \eqref{eq:reinforce}
+estimates the gradient of numerical noise. The gap must be chosen against
+the spread of the losses being compared, not against the magnitude of the
+objective, and the two can differ by orders of magnitude when the
+decision moves only a small fraction of total system cost.
+
+Second, the same threshold governs convergence. An update that changes
+the loss by less than $\epsilon\mathcal{L}$ is indistinguishable from no
+update, so a run whose total improvement falls below that threshold has
+not been shown to have learned anything, however smooth its trajectory
+appears. We report improvement against $\epsilon\mathcal{L}$ rather than
+in absolute terms for this reason.
+
+% ---------------------------------------------------------------------
+\subsection{Selection Among Candidates}
+\label{sec:finalists}
+
+A stochastic policy visits many supports, and the last iterate need not
+be the best one. We retain the $F$ distinct designs with the lowest
+validation loss encountered during training, together with the design
+induced by the deterministic support $\boldsymbol{\mu}$, and select among
+them on $\mathcal{V}$. Candidates whose losses differ by less than
+$\epsilon\mathcal{L}$ are treated as tied, and ties are broken toward the
+smaller installation, which avoids reporting capacity that the evaluation
+cannot show to be worthwhile.
+
+This step is a selection over sampled candidates rather than a
+consequence of the gradient, and it accounts for part of the method's
+advantage over selecting a support at random. Separating the two
+contributions requires comparing against a search that draws the same
+number of candidates from $q_{\boldsymbol{\theta}}$ with
+$\boldsymbol{\theta}$ held fixed, which isolates what the policy update
+adds beyond sampling and filtering.
+
+% ---------------------------------------------------------------------
+\subsection{Evaluation Protocol}
+\label{sec:protocol}
+
+All methods are compared by the value of the design each produces, on one
+test subset and against one reference. Writing
+$\boldsymbol{x}^{\star}_{\mathrm{m}}$ for the design produced by method
+$\mathrm{m}$ and $\mathcal{T}^{\mathrm{te}}$ for the test subset,
+\begin{equation}
+V_{\mathrm{m}}
+=
+\underbrace{
+\min_{\boldsymbol{y}^{\mathrm{op}}}
+\sum_{\xi\in\mathcal{T}^{\mathrm{te}}}
+c(\boldsymbol{0},\xi)
+}_{\text{no storage}}
+-
+\Bigl[
+C^{\mathrm{inv}}(\boldsymbol{x}^{\star}_{\mathrm{m}})
++
+\sum_{\xi\in\mathcal{T}^{\mathrm{te}}}
+c(\boldsymbol{x}^{\star}_{\mathrm{m}},\xi)
+\Bigr].
+\label{eq:storage_value}
+\end{equation}
+Total system cost is a poor denominator, since the storage decision moves
+a few percent of it and every design pays the same untouchable remainder;
+$V_{\mathrm{m}}$ measures instead what installing storage is worth, net of
+its own investment cost. Because the first term is common to all methods,
+ranking by $V_{\mathrm{m}}$ and by out-of-sample cost is identical, and a
+difference in $V$ is meaningful only when both designs were evaluated
+against the same reference on the same subset.
+
+Two further quantities bound the comparison. The perfect-information
+value $V^{\mathrm{PI}}$, obtained by optimizing the design directly on
+$\mathcal{T}^{\mathrm{te}}$, is attainable by no selection rule and
+converts values into captured fractions. And because a stochastic method
+must be compared against a distribution rather than a draw, we report the
+spread of $V$ over repeated runs alongside its mean, and take the strongest
+rule that requires neither learning nor a lucky draw as the reference
+point that a learned selector must exceed.
+
+% =====================================================================
+% Additional nomenclature for merging into the main list
+% =====================================================================
+% \item[$\Phi_{s,d,t},\Psi_{s,d,t}$] System carbon flow and system power.
+% \item[$\Xi_{s,d,t}$]      Carbon emitted beyond the target.
+% \item[$c^{\mathrm{CO_2}}$] Price per unit of excess carbon.
+% \item[$D_{s,d,t}$]        Compliance deficit before storage discharge.
+% \item[$\mathcal{X},\boldsymbol{\pi}$] Support scenarios and weights.
+% \item[$G_{\phi}$]         Pretrained conditional scenario generator.
+% \item[$\boldsymbol{Z},\boldsymbol{\Omega}$] Support latents and contexts.
+% \item[$q_{\boldsymbol{\theta}}$] Sampling policy over supports.
+% \item[$\mathcal{L}$]      Decision loss of a support.
+% \item[$\mathcal{V}$]      Fixed validation set used during training.
+% \item[$\epsilon$]         Relative optimality gap of the planning solve.
+% \item[$V_{\mathrm{m}}$]   Storage value of the design from method m.
+% \item[$V^{\mathrm{PI}}$]  Perfect-information storage value.
