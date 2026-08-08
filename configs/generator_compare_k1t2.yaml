@@ -120,7 +120,17 @@ dfl:
   # set instead (ScenarioCodec.support_indices). The planning model grows
   # linearly in K, so this is also the main lever on solve time.
   num_support_scenarios: 1
-  epochs: 50
+  # 35, which is where the exploration schedule finishes. exploration_std decays
+  # 0.8 * 0.94^epoch and reaches its 0.1 floor at epoch 34, so every epoch after
+  # that samples at the same width and the run is in pure fine-tuning. The
+  # previous 50 spent its last 16 epochs there for a total improvement that a
+  # whole 50-epoch run measured at 506 -- smaller than a single epoch's spread
+  # of validation objectives.
+  #
+  # Do not cut below this without steepening exploration_decay to match: at 25
+  # epochs the width is still 0.170 and the policy never reaches the fine
+  # phase. 0.8 * d^25 = 0.1 gives d = 0.919 if 25 is wanted.
+  epochs: 35
   # These two are priced very differently and should not move together.
   # validation_batch_size is solved once per sample, so 8 x 50 = 400 times, and
   # those solves run concurrently across solver_max_parallel_workers. The model
@@ -178,14 +188,25 @@ dfl:
   # them once on the same final validation set. This is model selection on the
   # validation split only; the test split remains sealed until evaluate.py.
   reinforce_finalists: 4
-  # Match the requested MIP gap. Differences smaller than this are not reliably
-  # ordered by the solver and must be ties, otherwise REINFORCE learns numerical
-  # noise. The finalist tie-break then prefers the cheaper/smaller design.
-  decision_deadband_relative: 0.001
-  # Stop only after the decision loss has failed to improve by more than the
-  # solver-resolution deadband for ten epochs. This is decision convergence,
-  # not the visual flatness of a noisy REINFORCE curve.
-  early_stopping_min_epochs: 50
+  # Twice the solver's own resolution. Differences smaller than the MIP gap are
+  # not reliably ordered and must be treated as ties, or REINFORCE learns
+  # numerical noise; doubling it keeps a "material" improvement clear of that
+  # floor. At solver_relative_gap 1e-4 on a 1.7M objective the gap leaves 170
+  # unresolved, so this is 340.
+  #
+  # It was 0.001, matching the tolerance when that was 1e-3. That made the
+  # threshold 1,700 -- larger than the 506 a whole 50-epoch run improved by, so
+  # no improvement this method achieves could ever have counted as material.
+  decision_deadband_relative: 0.0002
+  # Stop once the decision loss has gone ten epochs without improving by more
+  # than the deadband. Decision convergence, not the visual flatness of a noisy
+  # REINFORCE curve.
+  #
+  # min_epochs was 50, equal to epochs, so the stop could first be considered on
+  # the final epoch and never fired -- the mechanism was configured and
+  # structurally dead. 20 lets it act while still leaving the exploration
+  # schedule most of its range (the width is 0.232 at epoch 20, 0.1 at 34).
+  early_stopping_min_epochs: 20
   early_stopping_patience: 10
   device: auto
 
