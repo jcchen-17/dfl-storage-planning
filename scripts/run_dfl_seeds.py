@@ -88,6 +88,12 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=None,
                     help="override dfl.epochs; use a small value to smoke-test "
                          "the pipeline before committing to a full run")
+    # Off by default because five runs write five event directories and the
+    # per-seed train.log already carries the same numbers. On when the shape of
+    # the training curve is the question, which the log makes tedious to read.
+    ap.add_argument("--tensorboard", action="store_true",
+                    help="write tensorboard events (one directory per seed, "
+                         "under each run's output_dir)")
     args = ap.parse_args()
 
     python = sys.executable
@@ -114,8 +120,10 @@ def main() -> None:
 
         print(f"\n=== {name} (rule={args.rule}, seed={seed}) ===", flush=True)
         started = time.perf_counter()
-        code = run([python, "scripts/train_dfl.py", "--config", rel_cfg,
-                    "--no-tensorboard"], run_dir / "train.log")
+        train_cmd = [python, "scripts/train_dfl.py", "--config", rel_cfg]
+        if not args.tensorboard:
+            train_cmd.append("--no-tensorboard")
+        code = run(train_cmd, run_dir / "train.log")
         train_seconds = time.perf_counter() - started
         if code != 0:
             print(f"  TRAIN FAILED (exit {code}); see {run_dir / 'train.log'}", flush=True)
