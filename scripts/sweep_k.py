@@ -100,6 +100,73 @@ def _load_existing(path: Path) -> list[dict]:
         return json.load(stream)
 
 
+# Everything that changes what a row means. Resuming skips (rule, k, seed)
+# triples that already exist, and it has no way to notice that the run which
+# produced them was configured differently -- so a tolerance change, a new
+# carbon target or a different dataset silently yields one file holding rows
+# from two experiments, indistinguishable from each other. That has already
+# happened once here, mixing 1e-3 rows into a 1e-4 sweep.
+def _settings_fingerprint(config, planning, data_center, reference: float) -> dict:
+    costs = config.costs
+    return {
+        "dataset": config.data.dataset_path.name,
+        "test_split": config.data.test_split,
+        "validation_split": config.data.validation_split,
+        "horizon": config.data.horizon,
+        "solver_relative_gap": float(planning.solver_relative_gap),
+        "carbon_formulation": planning.carbon_formulation,
+        "carbon_intensity_max": float(planning.carbon_intensity_max),
+        "dc_carbon_cap": float(planning.dc_carbon_cap),
+        "other_bus_carbon_cap": float(planning.other_bus_carbon_cap),
+        "carbon_price_dollars_per_t": float(costs.carbon_price_dollars_per_t),
+        "validation_carbon_slack_dollars": float(
+            costs.validation_carbon_slack_dollars
+        ),
+        "max_power_mw": float(planning.max_power_mw),
+        "max_energy_mwh": float(planning.max_energy_mwh),
+        "max_duration_hours": float(planning.max_duration_hours),
+        "max_storage_sites": int(planning.max_storage_sites),
+        "capital_recovery_factor": float(costs.capital_recovery_factor),
+        "power_dollars_per_mw": float(costs.power_dollars_per_mw),
+        "energy_dollars_per_mwh": float(costs.energy_dollars_per_mwh),
+        "demand_dollars_per_mw_year": float(costs.demand_dollars_per_mw_year),
+        "data_center": [
+            float(data_center.non_it_mw),
+            float(data_center.it_base_mw),
+            float(data_center.it_workload_mw),
+        ],
+        # Solved from all of the above on the same subset, so it catches
+        # anything the explicit list misses.
+        "no_storage_objective": round(reference, 6),
+    }
+
+
+def _check_resume(output_dir: Path, fingerprint: dict, resuming: int) -> None:
+    path = output_dir / "k_sweep_settings.json"
+    if not path.exists():
+        path.write_text(json.dumps(fingerprint, indent=2), encoding="utf-8")
+        return
+    previous = json.loads(path.read_text(encoding="utf-8"))
+    changed = {
+        key: (previous.get(key), value)
+        for key, value in fingerprint.items()
+        if previous.get(key) != value
+    }
+    if not changed:
+        return
+    lines = "\n".join(
+        f"    {key}: {before!r} -> {after!r}" for key, (before, after) in changed.items()
+    )
+    raise SystemExit(
+        f"{output_dir} holds {resuming} rows from a run configured differently:\n"
+        f"{lines}\n\n"
+        "Resuming would append rows that are not comparable with the ones "
+        "already there, and nothing in the output would show which is which.\n"
+        "Move the directory aside and start a fresh one, or point --output-dir "
+        "somewhere new."
+    )
+
+
 def _write(rows: list[dict], output_dir: Path) -> None:
     with (output_dir / "k_sweep.json").open("w", encoding="utf-8") as stream:
         json.dump(rows, stream, indent=2, ensure_ascii=False)
@@ -364,6 +431,11 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = _load_existing(output_dir / "k_sweep.json")
     done = {(r["rule"], int(r["k"]), int(r["seed"])) for r in rows}
+    _check_resume(
+        output_dir,
+        _settings_fingerprint(config, planning, data_center, no_storage_objective),
+        len(rows),
+    )
 
     print(f"facility      : {data_center}")
     print(f"storage bounds: P<={planning.max_power_mw} E<={planning.max_energy_mwh} "
