@@ -63,7 +63,19 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base-config", default="configs/generator_compare_k1t2.yaml")
-    ap.add_argument("--rule", default="kmeans",
+    # farthest, which is also the config default. It was briefly worth avoiding:
+    # at solver_relative_gap 1e-3 it scored 862 against kmeans at 3,313 and
+    # looked like the worst possible seed. That was solver noise -- the same
+    # rule returned 862 and 3,050 on two runs of the same measurement -- and at
+    # 1e-4 it is the best deterministic rule there is, 4,294 against kmeans at
+    # 4,141.
+    #
+    # Note farthest ignores the seed, so a multi-seed sweep over it varies only
+    # the policy sampling and every run starts from the same scenario. That
+    # isolates the search's own variance, which is the headline question. Use
+    # --rule kmeans for a second set if the start needs to vary too: it is the
+    # answer to "is this sensitive to where it began".
+    ap.add_argument("--rule", default="farthest",
                     help="dfl.support_init_rule for every run")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     ap.add_argument("--tag", default=None, help="directory tag; defaults to the rule")
