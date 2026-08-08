@@ -144,6 +144,19 @@ def _settings_fingerprint(config, planning, data_center, reference: float) -> di
 def _check_resume(output_dir: Path, fingerprint: dict, resuming: int) -> None:
     path = output_dir / "k_sweep_settings.json"
     if not path.exists():
+        # Rows with no fingerprint beside them were written before this file
+        # existed, so their settings cannot be checked -- which is the case the
+        # guard is for, not an exemption from it. Only an empty directory is a
+        # fresh start.
+        if resuming:
+            raise SystemExit(
+                f"{output_dir} holds {resuming} rows but no "
+                "k_sweep_settings.json, so they were written by a version that "
+                "did not record its settings and there is no way to tell "
+                "whether they match this run.\n"
+                "Move the directory aside and start a fresh one, or point "
+                "--output-dir somewhere new."
+            )
         path.write_text(json.dumps(fingerprint, indent=2), encoding="utf-8")
         return
     previous = json.loads(path.read_text(encoding="utf-8"))
