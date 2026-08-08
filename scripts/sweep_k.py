@@ -259,6 +259,22 @@ def main() -> None:
             "measured on different sets and cannot be compared."
         ),
     )
+    # This sweep is serial -- one planning solve then one evaluation solve per
+    # row -- so solver_max_parallel_workers does nothing here and the config's
+    # solver_threads is the only thing using the machine. That value is chosen
+    # for the DFL loop, where many solves run at once and each wants few
+    # threads; a sweep wants the opposite. On a 24-thread box the configured 2
+    # leaves 92% of the CPU idle.
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=None,
+        help=(
+            "Threads per solve, overriding solver_threads. The config value is "
+            "sized for concurrent solves during DFL training; this sweep runs "
+            "them one at a time and should use the whole machine."
+        ),
+    )
     parser.add_argument("--output-dir", default="outputs/k_sweep")
     args = parser.parse_args()
 
@@ -272,6 +288,8 @@ def main() -> None:
         )
     if args.memory_limit is not None:
         planning = replace(planning, solver_memory_limit_mb=args.memory_limit)
+    if args.threads is not None:
+        planning = replace(planning, solver_threads=args.threads)
     data_center = config.data_center
     if args.original_scale:
         data_center = DataCenterConfig(0.03, 0.12, 0.30)
@@ -353,6 +371,9 @@ def main() -> None:
     print(f"cost P/E      : {config.costs.power_dollars_per_mw} / "
           f"{config.costs.energy_dollars_per_mwh}")
     print(f"test set      : {len(test_subset.scenarios)} scenarios")
+    print(f"solver        : {planning.solver_threads} threads, gap "
+          f"{planning.solver_relative_gap:g}, {planning.solver_memory_limit_mb:g} MB "
+          f"(serial: one solve at a time, so workers are unused)")
     print(f"support source: {args.source}")
     if args.source == "cvae":
         print(
