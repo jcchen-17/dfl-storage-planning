@@ -338,8 +338,23 @@ def train_dfl_stage(
             f"Generator {cvae.kind!r} exposes a {cvae.latent_dim}-dimensional latent, "
             "which is too large for the DFL policy. Use a projected latent."
         )
+    # The training loop may run at a looser tolerance than the reported numbers.
+    # evaluate_stage builds its own oracle from config.planning, so whatever is
+    # set here never reaches a reported objective.
+    training_planning = config.planning
+    if config.dfl.training_relative_gap > 0.0:
+        training_planning = replace(
+            config.planning,
+            solver_relative_gap=config.dfl.training_relative_gap,
+        )
+        print(
+            f"training solves at relative gap "
+            f"{config.dfl.training_relative_gap:g}; evaluation stays at "
+            f"{config.planning.solver_relative_gap:g}",
+            flush=True,
+        )
     oracle = StoragePlanningOracle(
-        feeder, config.planning, config.costs, config.data, config.data_center
+        feeder, training_planning, config.costs, config.data, config.data_center
     )
     writer = _summary_writer(paths.tensorboard / f"dfl_{tag}", tensorboard, config)
     policy: DirectSupportPolicy | None = None
@@ -443,6 +458,9 @@ def train_dfl_stage(
         # and only comparable to another run when they are recorded alongside it.
         "support_init_rule": config.dfl.support_init_rule,
         "seed": config.seed,
+        # Which tolerance the loop actually ran at. Two runs at different values
+        # searched different landscapes even with everything else identical.
+        "training_relative_gap": float(training_planning.solver_relative_gap),
         "scenario_weights": list(result.scenario_weights),
         "support_source_names": checkpoint["support_source_names"],
         "planning": result.planning_result.to_dict(),

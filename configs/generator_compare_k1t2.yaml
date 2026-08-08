@@ -88,6 +88,19 @@ generator:
 
 dfl:
   method: reinforce
+  # Solver tolerance inside the training loop; evaluation keeps
+  # planning.solver_relative_gap, now 1e-4.
+  #
+  # The reported tolerance had to come down to 1e-4 because at 1e-3 the ranking
+  # of two rules reversed on nothing but where the solver stopped. But at 1e-4 a
+  # single K=1 planning solve has been seen to run past 900 s without
+  # converging, and a run does hundreds of them -- one per policy sample per
+  # epoch -- so the loop would become unbounded in time. It does not need the
+  # precision: the score-function estimator only needs each epoch's samples
+  # ranked roughly right, and averages over epochs.
+  #
+  # Set to 0.0 to run the loop at the reported tolerance instead.
+  training_relative_gap: 0.001
   # REINFORCE learns this many representative 48 h latent scenarios and their
   # weights; every candidate design is ranked on a fixed validation set. The
   # conditioning contexts are farthest-point anchors over

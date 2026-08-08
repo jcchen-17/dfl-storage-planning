@@ -136,6 +136,25 @@ class DFLConfig:
     # spread is what storage value tracks. Only the starting point moves; the
     # validation and test subsets are chosen elsewhere and are unaffected.
     support_init_rule: str = "farthest"
+    # Solver tolerance for the solves inside the training loop only. Zero keeps
+    # planning.solver_relative_gap, which is what every run before this used.
+    #
+    # Training and reporting want different things from the tolerance. A run
+    # solves the planning model once per policy sample per epoch -- hundreds of
+    # times -- and only needs the ranking among an epoch's samples to be roughly
+    # right, since the score-function estimator averages over epochs anyway. The
+    # reported numbers need to be exact, because differences of a few thousand
+    # decide them: at 1e-3 two runs that differed only in solver threads
+    # disagreed by 2,188 and swapped two rules' ranking.
+    #
+    # Tightening the reported tolerance to 1e-4 made single K=1 planning solves
+    # run past 900 s without converging. Hundreds of those is not a training
+    # loop, so the loop gets the looser value and evaluate_stage keeps the tight
+    # one. The cost is that finalist selection also runs loose, so a run may
+    # keep a slightly worse design than it could have -- that is part of what
+    # the method achieves under its own budget, and the number reported for it
+    # is still measured exactly.
+    training_relative_gap: float = 0.0
     candidate_pool_size: int = 12
     bo_initial_evaluations: int = 6
     bo_iterations: int = 6
