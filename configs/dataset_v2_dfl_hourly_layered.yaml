@@ -1,10 +1,10 @@
-# Exploratory dataset-v2 CVAE + REINFORCE run under the proposed hourly
-# vintage-layered carbon accounting. This has its own output directory and does
-# not overwrite the exhaustive or carbon-accounting baselines.
+# Main single-PCC data-centre microgrid experiment. Historical IEEE-13 profiles
+# are aggregated at load time; the feeder model is retained only in legacy
+# configurations and dataset construction.
 seed: 20260808
 
 data:
-  dataset_path: data/processed/ieee13_smartds_dfl_v2/dfl_scenarios_v2_48h.npz
+  dataset_path: data/processed/ieee13_smartds_dfl_v2_outage/dfl_scenarios_v2_48h.npz
   train_split: train
   validation_split: validation
   test_split: test
@@ -19,8 +19,7 @@ data:
   tariff_reference_price_per_mwh: 53.248
 
 cvae:
-  # Sixteen dimensions balance reconstruction capacity against the continuous
-  # search dimension faced by the downstream REINFORCE policy.
+  # Sixteen dimensions provide a compact conditional scenario manifold.
   latent_dim: 16
   hidden_dim: 256
   epochs: 300
@@ -30,7 +29,7 @@ cvae:
   batch_size: 32
   kl_warmup_epochs: 40
   active_load_weight: 0.25
-  reactive_load_weight: 0.10
+  reactive_load_weight: 0.0
   pv_weight: 0.20
   # Workload is restored from the fixed v2 template by ScenarioCodec v5.
   workload_weight: 0.0
@@ -47,60 +46,38 @@ generator:
   kind: cvae
 
 dfl:
-  method: reinforce
-  num_support_scenarios: 1
-  # Give the policy enough updates to move beyond its initial CVAE latent while
-  # retaining four candidates per epoch for a rank-based REINFORCE signal.
+  # Directly fine-tune the CVAE with exact fixed-design recourse feedback.
+  method: recourse_feasibility
+  num_support_scenarios: 4
   epochs: 15
-  policy_samples_per_epoch: 4
-  # Each candidate is dispatched on four validation scenarios as four separate
-  # exact models, then costs are weighted. This gives distributional DFL reward
-  # without constructing a memory-heavy joint nonconvex model.
-  validation_batch_size: 4
   final_validation_size: 4
-  learning_rate: 0.01
-  baseline_momentum: 0.75
-  # Exact site enumeration now supplies a forced-build warm start, so exploration
-  # can be wider than in the earlier joint-siting run without losing incumbents.
-  initial_exploration_std: 0.15
-  minimum_exploration_std: 0.05
-  exploration_decay: 0.95
-  diversity_margin: 0.8
-  diversity_weight: 0.0
-  weight_entropy_weight: 0.0
-  latent_prior_weight: 0.001
-  support_init_rule: kmeans
-  training_relative_gap: 0.02
-  # Measured storage value on the fixed validation set is only about 0.34% of
-  # total system cost. A 5% reward tolerance and 1% decision deadband therefore
-  # erased the very signal DFL is meant to learn.
-  validation_relative_gap: 0.04
+  training_relative_gap: 0.005
   training_allow_carbon_slack: true
-  decision_deadband_relative: 0.001
-  reinforce_finalists: 4
-  early_stopping_patience: 6
-  early_stopping_min_epochs: 10
   evaluation_selection_rule: kmeans
   device: auto
+  lambda_dfl: 1.0
+  feasibility_load_weight: 1.0
+  feasibility_pv_weight: 1.0
+  feasibility_carbon_weight: 1.0
+  dfl_start_epoch: 0
+  dfl_eval_interval: 1
+  decision_batch_size: 4
+  use_solution_cache: true
 
 data_center:
   non_it_mw: 0.09
   it_base_mw: 0.36
   it_workload_mw: 0.90
-  # Main experiment treats computing demand as inflexible so workload shifting
-  # cannot substitute for carbon-aware storage. Delay flexibility is retained
-  # as an explicit ablation through run_baselines.py.
+  # Computing demand is inflexible so workload shifting cannot substitute for
+  # carbon-aware storage.
   workload_max_delay_hours: 0
   workload_processing_upper: 1.20
 
 planning:
+  topology: single_pcc
   max_storage_sites: 1
-  # Exact decomposition: no storage plus one forced-build subproblem per bus.
-  # The 2/30/60/120 s sweep found 60 s was the first budget with an incumbent
-  # for all 6 tested subsets x 5 candidate buses.
-  enumerate_storage_sites: true
-  enumeration_site_time_limit_seconds: 60
-  enumeration_absolute_gap_dollars: 100
+  # There is one behind-the-meter storage location, so no siting enumeration.
+  enumerate_storage_sites: false
   initial_soc: 0.20
   initial_carbon_intensity: 0.28
   min_soc: 0.10
@@ -115,37 +92,35 @@ planning:
   min_duration_hours: 1.0
   max_duration_hours: 8.0
   grid_limit_mw: 5.0
-  backup_generator_mw: 2.0
+  # Partial firm backup: enough to serve most IT load, but not every coincident
+  # high-load/low-PV outage hour. This makes storage reliability observable.
+  backup_generator_mw: 0.75
   backup_generator_mvar: 1.6
   carbon_intensity_max: 0.75
   dc_carbon_cap: 0.28
   other_bus_carbon_cap: 1.10
-  # Tight carbon compliance is applied at the data-center bus (675). Storage
-  # keeps independently dispatchable charge vintages and network carbon follows
-  # the feeder flows; other buses retain the loose other_bus_carbon_cap.
-  # Exact nodal carbon propagation and exact charge-vintage storage accounting.
-  # Siting, power and energy capacity are jointly optimized over all candidates.
-  carbon_formulation: layered_dc_exact
+  # Exact, linear source/vintage ledger at the PCC: initial inventory, PV and
+  # diesel layers, plus one grid-carbon layer per charging interval.
+  carbon_formulation: layered_pcc
+  diesel_carbon_t_per_mwh: 0.72
+  # Retained for configuration compatibility; topology=single_pcc has only the
+  # behind-the-meter storage service boundary.
   storage_service_mode: shared_feeder
   carbon_cap_scope: hourly
   carbon_envelope_bound: demand
   flow_limit_formulation: polygon
   solver_time_limit_seconds: 180
   solver_backend: gurobi
-  # Report fixed-design test dispatches once they are certified within 1%.
-  # Training remains looser at dfl.training_relative_gap=2%.
-  solver_relative_gap: 0.01
-  # Two threads curb per-model branch-and-bound memory while four independent
-  # candidates still run concurrently (8 solver threads in the planning wave).
+  solver_relative_gap: 0.001
+  # Four independent DFL candidates can run concurrently.
   solver_threads: 2
   solver_emphasis: feasibility
   solver_aggressive_heuristics: true
-  # Four exact nonconvex solves in parallel leave memory for Windows, PyTorch
-  # and the parent process on the 32 GB machine.
+  # Each PCC model is linear apart from operating/build binaries; this is a
+  # conservative per-worker ceiling rather than a measured requirement.
   solver_max_parallel_workers: 4
   solver_memory_limit_mb: 5500
   verbose_solver: false
-  warm_start_time_limit_seconds: 30
 
 costs:
   capital_recovery_factor: 0.09
@@ -155,13 +130,10 @@ costs:
   degradation_dollars_per_mwh: 7.0
   demand_dollars_per_mw_year: 160000.0
   generator_dollars_per_mwh: 250.0
-  delay_dollars_per_task_hour: 24.0
   curtailment_dollars_per_mwh: 4.0
   shedding_dollars_per_mwh: 10000.0
-  validation_carbon_slack_dollars: 300000.0
-  # Single physical-tonne penalty on emissions above the hourly 0.28 tCO2/MWh
-  # performance benchmark. This is an intentionally high compliance/shadow
-  # price sensitivity, not represented as an observed allowance-market price.
-  carbon_price_dollars_per_t: 200.0
+  # Diagnostic relaxation of the urgent hourly cap. The physical excess is
+  # still reported, but is more expensive than shedding carbon-intensive load.
+  carbon_excess_dollars_per_t: 300000.0
 
-output_dir: outputs/dataset_v2_dfl_hourly_layered_tou125_carbon200
+output_dir: outputs/dataset_v2_dfl_single_pcc_outage_hourly_cap

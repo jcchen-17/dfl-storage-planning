@@ -1,13 +1,18 @@
-# Storage DFL — current v2 workflow
+# Storage DFL — single-PCC data-centre microgrid
 
-This repository now keeps one supported experiment only:
+The main experiment reduces the microgrid to one point of common coupling:
 
-- 48-hour non-overlapping v2 scenarios;
+- data-centre demand, fixed PV, a backup diesel generator and one battery;
+- 48-hour historical scenarios with importance-weighted 1--4 hour grid outages;
 - 16-dimensional CVAE with deterministic workload and full-weekend price restoration;
-- REINFORCE decision-focused training with one support scenario;
-- hourly data-center carbon cap using feeder-wide carbon-attribute commodity
-  flows and independently dispatchable storage carbon bins;
+- direct CVAE fine-tuning with exact fixed-design recourse feedback;
+- an ODECE-inspired feasibility surrogate for load, PV and carbon errors;
+- exact MILP decision regret as an evaluation-only metric;
+- hourly data-centre carbon cap using exact source-resolved storage vintages;
 - Gurobi planning and out-of-sample evaluation.
+
+The runtime planning path is single-PCC only. IEEE-13 structures remain solely
+for rebuilding and auditing the source dataset.
 
 The single configuration is
 `configs/dataset_v2_dfl_hourly_layered.yaml`.
@@ -28,20 +33,29 @@ python scripts/train_generator.py
 python scripts/verify_generator.py configs/dataset_v2_dfl_hourly_layered.yaml
 ```
 
-Train REINFORCE and evaluate the selected storage design:
+Train the recourse-aware CVAE and evaluate its storage design:
 
 ```powershell
-python scripts/run_baselines.py
 python scripts/train_dfl.py
 python scripts/evaluate.py
 ```
 
 The active artifacts are written under
-`outputs/dataset_v2_dfl_hourly_layered/`.
+`outputs/dataset_v2_dfl_single_pcc_outage_hourly_cap/`.
+
+Planning JSON now includes an optional `carbon_ledger` with annualized PCC
+imports, diesel/PV supply, storage charge/discharge, source emissions and carbon
+delivered to the data centre. This makes the source, storage-vintage and
+consumption layers directly auditable.
 
 ## Retained Python package
 
-`src/storage_dfl/` contains the runtime library used by the six commands above:
-scenario schemas and normalization, the IEEE-13 feeder, CVAE components,
-REINFORCE support policy, planning models, solver backends, and stage wiring.
-`tests/test_core.py` is the retained automated test suite.
+`src/storage_dfl/` contains the runtime library used by the commands above:
+scenario aggregation and normalization, the single-PCC planning model, CVAE
+components, the recourse-aware trainer, solver backends, and stage wiring.
+Legacy REINFORCE, scenario-BO, GAN, diffusion and IEEE-13 planning experiment
+files have been removed. The exact feasibility loss
+and gradient paths are documented in `docs/recourse_feasibility_dfl.md`.
+`tests/test_single_pcc.py` and `tests/test_recourse_dfl.py` cover the PCC model,
+fixed-design recourse, directional losses, gradient flow and true-MILP final
+evaluation.

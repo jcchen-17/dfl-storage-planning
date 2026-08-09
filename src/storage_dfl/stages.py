@@ -19,12 +19,10 @@ from storage_dfl.data import (
     load_historical_scenarios,
 )
 from storage_dfl.dfl import (
-    DirectSupportPolicy,
+    normalized_decision_regret,
     resolve_device,
-    support_init_indices,
     select_scenarios,
-    train_direct_generator,
-    train_scenario_bo,
+    train_recourse_feasibility_cvae,
 )
 from storage_dfl.models import (
     GENERATOR_KINDS,
@@ -34,13 +32,14 @@ from storage_dfl.models import (
     save_generator,
     train_generator,
 )
-from storage_dfl.network import Feeder, ieee13_unbalanced_microgrid
+from storage_dfl.network import Feeder, single_pcc_microgrid
 from storage_dfl.planning import (
-    PlanningJob,
     PlanningResult,
     StorageDesign,
     StoragePlanningOracle,
+    evaluate_fixed_design_recourse,
     make_planning_oracle,
+    weighted_carbon_ledger,
 )
 
 
@@ -163,12 +162,38 @@ def _experiment_data(
     config: ExperimentConfig,
     split: str,
 ) -> tuple[Feeder, ScenarioPool]:
-    feeder = ieee13_unbalanced_microgrid()
     pool = load_historical_scenarios(
         config.data.dataset_path,
         split=split,
         horizon=config.data.horizon,
     )
+    if config.planning.topology != "single_pcc":
+        raise ValueError("Only planning.topology='single_pcc' is retained.")
+    feeder = single_pcc_microgrid()
+    aggregated = []
+    for scenario in pool.scenarios:
+        # In the reduced model the only demand behind the meter is the data
+        # centre. Its facility load is derived once from the observed
+        # workload/PUE traces, then exposed as the active-load channel so
+        # CVAE auxiliary net-load losses remain decision relevant.
+        dc_load = np.asarray(
+            config.data_center.power_mw(
+                scenario.pue, scenario.workload_arrival
+            ),
+            dtype=float,
+        )
+        pv = scenario.pv_available_mw.sum(axis=(1, 2))
+        active = np.repeat(dc_load[:, None, None] / 3.0, 3, axis=2)
+        pcc_pv = np.repeat(pv[:, None, None] / 3.0, 3, axis=2)
+        aggregated.append(
+            replace(
+                scenario,
+                active_load_mw=active,
+                reactive_load_mvar=np.zeros_like(active),
+                pv_available_mw=pcc_pv,
+            )
+        )
+    pool = ScenarioPool(tuple(aggregated))
     if config.data.tariff_spread_scale <= 0.0:
         raise ValueError("data.tariff_spread_scale must be positive.")
     if abs(config.data.tariff_spread_scale - 1.0) > 1.0e-12:
@@ -199,7 +224,7 @@ def _experiment_data(
             f"{first.horizon}."
         )
     if first.num_buses != len(feeder.buses) or first.num_phases != len(feeder.phases):
-        raise ValueError("Historical scenario dimensions do not match the IEEE13 feeder.")
+        raise ValueError("Scenario dimensions do not match the configured topology.")
     for scenario in pool.scenarios:
         if np.any(scenario.active_load_mw[:, ~feeder.phase_mask] != 0.0):
             raise ValueError(f"{scenario.name}: load is nonzero on an absent phase")
@@ -254,13 +279,9 @@ def _apply_generator_override(
     config: ExperimentConfig,
     generator_override: str | None,
 ) -> ExperimentConfig:
-    if generator_override is None:
-        return config
-    if generator_override not in GENERATOR_KINDS:
-        raise ValueError(f"generator_override must be one of {GENERATOR_KINDS}.")
-    return replace(
-        config, generator=replace(config.generator, kind=generator_override)
-    )
+    if generator_override not in {None, "cvae"}:
+        raise ValueError("Only the CVAE generator is retained.")
+    return config
 
 
 def load_generator(
@@ -386,15 +407,9 @@ def train_cvae_stage(
 
 
 def _method_tag(config: ExperimentConfig) -> str:
-    """Artifact suffix identifying both the generator and the DFL method.
+    """Artifact suffix for the retained feasibility method and CAPEX case."""
 
-    The CVAE keeps the bare method name so runs made before other generators
-    existed are not orphaned; other generators get a prefixed tag so a GAN run
-    never overwrites a CVAE run in the same output directory.
-    """
-
-    kind = config.generator.kind
-    base = config.dfl.method if kind == "cvae" else f"{kind}_{config.dfl.method}"
+    base = config.dfl.method
     scale = float(config.costs.battery_capex_scale)
     if abs(scale - 1.0) <= 1.0e-12:
         return base
@@ -421,9 +436,11 @@ def train_dfl_stage(
             ),
         )
     if method_override is not None:
-        if method_override not in {"reinforce", "scenario_bo"}:
-            raise ValueError("method_override must be 'reinforce' or 'scenario_bo'.")
+        if method_override != "recourse_feasibility":
+            raise ValueError("Only method_override='recourse_feasibility' is retained.")
         config = replace(config, dfl=replace(config.dfl, method=method_override))
+    if config.dfl.method != "recourse_feasibility":
+        raise ValueError("Only dfl.method='recourse_feasibility' is retained.")
     tag = _method_tag(config)
     paths = ArtifactPaths(config.output_dir)
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -434,21 +451,11 @@ def train_dfl_stage(
     _require_current_codec(config, codec)
     device = resolve_device(config.dfl.device)
     cvae = load_generator(paths, config.generator.kind, device)
-    if cvae.latent_dim > codec.trajectory_dim // 2:
-        # A diffusion model in ``latent_mode: full`` lands here. Its latent is the
-        # whole trajectory, which the score-function policy cannot search.
-        raise RuntimeError(
-            f"Generator {cvae.kind!r} exposes a {cvae.latent_dim}-dimensional latent, "
-            "which is too large for the DFL policy. Use a projected latent."
-        )
     # The training loop may run at a looser tolerance than the reported numbers.
     # evaluate_stage builds its own oracle from config.planning, so whatever is
     # set here never reaches a reported objective.
     training_planning = config.planning
-    if (
-        config.dfl.training_relative_gap > 0.0
-        and not config.planning.enumerate_storage_sites
-    ):
+    if config.dfl.training_relative_gap > 0.0:
         training_planning = replace(
             config.planning,
             solver_relative_gap=config.dfl.training_relative_gap,
@@ -459,77 +466,24 @@ def train_dfl_stage(
             f"{config.planning.solver_relative_gap:g}",
             flush=True,
         )
-    if training_planning.enumerate_storage_sites:
-        print(
-            "free planning uses exact site enumeration: none + "
-            f"{len(feeder.storage_candidates)} forced-site parts, "
-            f"{training_planning.enumeration_site_time_limit_seconds:g}s per site",
-            flush=True,
-        )
     oracle = make_planning_oracle(
         feeder, training_planning, config.costs, config.data, config.data_center
     )
     writer = _summary_writer(paths.tensorboard / f"dfl_{tag}", tensorboard, config)
-    policy: DirectSupportPolicy | None = None
-    support_source_names: list[str] = []
     try:
-        if config.dfl.method == "scenario_bo":
-            result = train_scenario_bo(
-                cvae,
-                codec,
-                observed_pool,
-                oracle,
-                config.dfl,
-                config.seed,
-                writer=writer,
-            )
-            support_source_names = list(result.support_source_names)
-        elif config.dfl.method == "reinforce":
-            validation_trajectories, validation_contexts = codec.encode_pool(observed_pool)
-            # Only the policy's starting point. codec.support_indices still picks
-            # the fixed validation subset and the reported test subset, so those
-            # stay put and results remain comparable across support_init_rule.
-            support_indices = support_init_indices(
-                config.dfl.support_init_rule,
-                observed_pool,
-                codec,
-                config.dfl.num_support_scenarios,
-                seed=config.seed,
-            )
-            support_source_names = observed_pool.names(support_indices.tolist())
-            support_conditions = torch.as_tensor(
-                validation_contexts[support_indices],
-                dtype=torch.float32,
-                device=device,
-            )
-            with torch.no_grad():
-                initial_latent, _ = cvae.encode(
-                    torch.as_tensor(
-                        validation_trajectories[support_indices],
-                        dtype=torch.float32,
-                        device=device,
-                    ),
-                    support_conditions,
-                )
-            policy = DirectSupportPolicy(
-                support_count=config.dfl.num_support_scenarios,
-                latent_dim=cvae.latent_dim,
-                seed=config.seed,
-                initial_latent=initial_latent.cpu(),
-            )
-            result = train_direct_generator(
-                policy,
-                cvae,
-                codec,
-                observed_pool,
-                oracle,
-                config.dfl,
-                config.seed,
-                support_conditions=support_conditions,
-                writer=writer,
-            )
-        else:
-            raise ValueError("dfl.method must be 'scenario_bo' or 'reinforce'.")
+        result = train_recourse_feasibility_cvae(
+            cvae,
+            codec,
+            observed_pool,
+            oracle,
+            config.cvae,
+            config.dfl,
+            config.seed,
+            writer=writer,
+        )
+        support_source_names = ["direct_cvae_prior"] * len(
+            result.generated_scenarios
+        )
     finally:
         if writer is not None:
             writer.close()
@@ -542,18 +496,20 @@ def train_dfl_stage(
         "support_latent": torch.as_tensor(result.support_latent),
         "support_conditions": torch.as_tensor(result.support_conditions),
         "scenario_weights": torch.as_tensor(result.scenario_weights),
+        "support_grid_available": torch.as_tensor(
+            np.stack(
+                [scenario.grid_available for scenario in result.generated_scenarios]
+            ),
+            dtype=torch.float32,
+        ),
         "support_source_names": support_source_names,
         # Evaluation decodes the supports and replans. Persist the design chosen
         # during training so a near-degenerate replan that flips bus or capacity
         # is visible instead of looking like a change learned by DFL.
         "selected_training_design": result.planning_result.to_dict()["design"],
     }
-    if policy is not None:
-        checkpoint["policy_state_dict"] = policy.state_dict()
-    if config.dfl.method == "scenario_bo":
-        checkpoint["candidate_source_names"] = list(result.candidate_source_names)
-        checkpoint["selector_feature_names"] = list(result.feature_names)
-        checkpoint["selector_parameters"] = torch.as_tensor(result.best_parameters)
+    checkpoint["fine_tuned_generator_state_dict"] = cvae.state_dict()
+    checkpoint["decision_regret"] = float(result.decision_regret)
     dfl_checkpoint = paths.dfl_checkpoint_for(tag)
     torch.save(checkpoint, dfl_checkpoint)
     _write_json(
@@ -567,32 +523,11 @@ def train_dfl_stage(
         "method": config.dfl.method,
         "generator": config.generator.kind,
         "epochs": len(result.history),
-        # Both of these move the starting point, so a run is only reproducible
-        # and only comparable to another run when they are recorded alongside it.
-        "support_init_rule": config.dfl.support_init_rule,
         "seed": config.seed,
         # Which tolerance the loop actually ran at. Two runs at different values
         # searched different landscapes even with everything else identical.
-        "training_relative_gap": float(
-            0.0
-            if training_planning.enumerate_storage_sites
-            else training_planning.solver_relative_gap
-        ),
-        "planning_oracle": (
-            "exact_site_enumeration"
-            if training_planning.enumerate_storage_sites
-            else "joint_siting"
-        ),
-        "enumeration_site_time_limit_seconds": (
-            float(training_planning.enumeration_site_time_limit_seconds)
-            if training_planning.enumerate_storage_sites
-            else None
-        ),
-        "training_validation_relative_gap": float(
-            config.dfl.validation_relative_gap
-            if config.dfl.validation_relative_gap > 0.0
-            else training_planning.solver_relative_gap
-        ),
+        "training_relative_gap": float(training_planning.solver_relative_gap),
+        "planning_oracle": "single_pcc",
         "battery_capex_scale": float(config.costs.battery_capex_scale),
         "scenario_weights": list(result.scenario_weights),
         "support_source_names": checkpoint["support_source_names"],
@@ -600,8 +535,8 @@ def train_dfl_stage(
         "training_validation": result.full_validation_result.to_dict(),
         "checkpoint": str(dfl_checkpoint),
     }
-    if config.dfl.method == "scenario_bo":
-        payload["finalist_evaluations"] = list(result.finalist_evaluations)
+    payload["perfect_information_reference"] = result.reference_result.to_dict()
+    payload["decision_regret"] = float(result.decision_regret)
     _write_json(paths.dfl_json_for("dfl_result", tag), payload)
     return payload
 
@@ -757,6 +692,7 @@ def _aggregate_scenario_wise_results(
         # Sum is total solver effort across parallel workers, not wall time.
         solve_time_seconds=sum(result.solve_time_seconds for result in results),
         relative_gap=max(float(result.relative_gap) for result in results),
+        carbon_ledger=weighted_carbon_ledger(results, normalized),
     )
 
 
@@ -769,18 +705,16 @@ def _solve_fixed_design_scenario_wise(
     accepted_relative_gap: float,
 ) -> tuple[PlanningResult, list[PlanningResult], float]:
     started = time.perf_counter()
-    results = oracle.solve_many(
-        [PlanningJob((scenario,), fixed_design=design) for scenario in scenarios],
-        allow_carbon_slack=True,
-    )
-    wall_seconds = time.perf_counter() - started
-    aggregate = _aggregate_scenario_wise_results(
-        results,
+    aggregate, results = evaluate_fixed_design_recourse(
+        oracle,
+        scenarios,
         weights,
         design,
-        demand_dollars_per_mw_year,
-        accepted_relative_gap,
+        allow_carbon_slack=True,
+        use_cache=False,
+        accepted_relative_gap=accepted_relative_gap,
     )
+    wall_seconds = time.perf_counter() - started
     return aggregate, results, wall_seconds
 
 
@@ -814,8 +748,8 @@ def evaluate_stage(
             config, planning=replace(config.planning, solver_memory_limit_mb=memory_limit_mb)
         )
     if method_override is not None:
-        if method_override not in {"reinforce", "scenario_bo"}:
-            raise ValueError("method_override must be 'reinforce' or 'scenario_bo'.")
+        if method_override != "recourse_feasibility":
+            raise ValueError("Only method_override='recourse_feasibility' is retained.")
         config = replace(config, dfl=replace(config.dfl, method=method_override))
     tag = _method_tag(config)
     paths = ArtifactPaths(config.output_dir)
@@ -837,7 +771,7 @@ def evaluate_stage(
     if not checkpoint_path.exists() and paths.dfl_checkpoint.exists():
         checkpoint_path = paths.dfl_checkpoint
     checkpoint = _load_torch(checkpoint_path, device)
-    checkpoint_method = checkpoint.get("method", "reinforce")
+    checkpoint_method = checkpoint.get("method", "recourse_feasibility")
     if checkpoint_method != config.dfl.method:
         raise RuntimeError(
             f"Requested DFL method {config.dfl.method!r}, but checkpoint "
@@ -849,6 +783,9 @@ def evaluate_stage(
             f"Requested generator {config.generator.kind!r}, but checkpoint "
             f"{checkpoint_path} was trained with {checkpoint_generator!r}."
         )
+    if "fine_tuned_generator_state_dict" in checkpoint:
+        cvae.load_state_dict(checkpoint["fine_tuned_generator_state_dict"])
+        cvae.freeze()
     latent = checkpoint["support_latent"].to(device=device, dtype=torch.float32)
     conditions = checkpoint["support_conditions"].to(device=device, dtype=torch.float32)
     weights = tuple(float(value) for value in checkpoint["scenario_weights"].cpu())
@@ -858,6 +795,16 @@ def evaluate_stage(
         conditions.cpu().numpy(),
         name_prefix="dfl_evaluation",
     )
+    if "support_grid_available" in checkpoint:
+        availability = checkpoint["support_grid_available"].cpu().numpy()
+        generated = tuple(
+            replace(
+                scenario,
+                grid_available=np.asarray(availability[index], dtype=float),
+                annual_occurrences=None,
+            )
+            for index, scenario in enumerate(generated)
+        )
 
     oracle = make_planning_oracle(
         feeder, config.planning, config.costs, config.data, config.data_center
@@ -967,23 +914,27 @@ def evaluate_stage(
             config.planning.solver_relative_gap,
         )
     )
+    perfect_information = None
+    exact_decision_regret = None
+    if checkpoint.get("method") == "recourse_feasibility":
+        print("Perfect-information reference: solving the true scenario MILP...", flush=True)
+        perfect_information = oracle.solve(
+            evaluation_pool.scenarios,
+            weights=evaluation_weights,
+            allow_carbon_slack=True,
+            use_cache=True,
+        )
+        exact_decision_regret = normalized_decision_regret(
+            validation, perfect_information
+        )
     payload = {
-        "method": checkpoint.get("method", "reinforce"),
+        "method": checkpoint.get("method", "recourse_feasibility"),
         "generator": checkpoint_generator,
         "device": str(device),
         "test_split": config.data.test_split,
         "test_scenarios_evaluated": len(evaluation_pool.scenarios),
         "evaluation_relative_gap": config.planning.solver_relative_gap,
-        "planning_oracle": (
-            "exact_site_enumeration"
-            if config.planning.enumerate_storage_sites
-            else "joint_siting"
-        ),
-        "enumeration_site_time_limit_seconds": (
-            float(config.planning.enumeration_site_time_limit_seconds)
-            if config.planning.enumerate_storage_sites
-            else None
-        ),
+        "planning_oracle": "single_pcc",
         "evaluation_selection_rule": config.dfl.evaluation_selection_rule,
         "evaluation_scenario_names": list(evaluation_names),
         "evaluation_scenario_weights": list(evaluation_weights),
@@ -1021,6 +972,10 @@ def evaluate_stage(
             result.to_dict() for result in validation_scenario_results
         ],
         "out_of_sample_wall_seconds": validation_wall_seconds,
+        "perfect_information_reference": (
+            perfect_information.to_dict() if perfect_information is not None else None
+        ),
+        "decision_regret": exact_decision_regret,
     }
     _write_json(paths.dfl_json_for("result", tag), payload)
     _write_trajectories(

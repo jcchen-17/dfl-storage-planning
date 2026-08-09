@@ -25,6 +25,10 @@ class Scenario:
     # 1.3, and the planner answered by building a battery eight times the size
     # anything else asked for, pinned to max_duration_hours.
     annual_occurrences: float | None = None
+    # Probability mass within the scenario's data split.  Outage windows are
+    # deliberately oversampled in the file, so uniform row weights are not the
+    # physical distribution.  None retains equal-probability legacy data.
+    probability_weight: float | None = None
 
     @property
     def horizon(self) -> int:
@@ -63,6 +67,8 @@ class Scenario:
             raise ValueError(f"{self.name}: power profiles must be nonnegative")
         if self.annual_occurrences is not None and self.annual_occurrences <= 0.0:
             raise ValueError(f"{self.name}: annual_occurrences must be positive")
+        if self.probability_weight is not None and self.probability_weight <= 0.0:
+            raise ValueError(f"{self.name}: probability_weight must be positive")
 
 
 @dataclass(frozen=True)
@@ -93,3 +99,22 @@ class ScenarioPool:
 
     def names(self, indices: tuple[int, ...] | list[int]) -> list[str]:
         return [self.scenarios[index].name for index in indices]
+
+    def normalized_weights(
+        self, indices: tuple[int, ...] | list[int] | None = None
+    ) -> tuple[float, ...]:
+        selected = (
+            self.scenarios
+            if indices is None
+            else tuple(self.scenarios[index] for index in indices)
+        )
+        raw = np.asarray(
+            [
+                1.0 if scenario.probability_weight is None
+                else float(scenario.probability_weight)
+                for scenario in selected
+            ],
+            dtype=float,
+        )
+        raw /= raw.sum()
+        return tuple(float(value) for value in raw)

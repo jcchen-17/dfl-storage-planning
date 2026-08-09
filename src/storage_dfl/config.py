@@ -50,8 +50,7 @@ class CVAEConfig:
     def field_weights(self) -> tuple[float, ...]:
         """Per-field reconstruction weights: P, Q, PV, workload, PUE, price, carbon.
 
-        Every generator reads them through this accessor so a GAN, a diffusion
-        model and the CVAE are all held to the same field balance.
+        The CVAE reconstruction and feasibility fine-tuning share these values.
         """
 
         return (
@@ -66,136 +65,38 @@ class CVAEConfig:
 
 
 @dataclass(frozen=True)
-class GANConfig:
-    """Conditional WGAN-GP settings.
-
-    ``latent_dim``, ``hidden_dim``, ``epochs``, ``batch_size`` and the field
-    weights are shared with the CVAE section so the two models differ only in
-    their training objective.
-    """
-
-    critic_steps: int = 5
-    gradient_penalty: float = 10.0
-    critic_hidden_dim: int = 512
-    critic_learning_rate: float = 2.0e-4
-    generator_learning_rate: float = 2.0e-4
-    adam_beta1: float = 0.5
-    adam_beta2: float = 0.9
-    # A GAN sample has no matching observation, so the decision-relevant
-    # summaries the CVAE preserves per sample are imposed here as batch moments.
-    moment_weight: float = 10.0
-    # Post-hoc inversion phase; the generator is frozen while this runs.
-    encoder_epochs: int = 200
-    encoder_learning_rate: float = 1.0e-3
-    latent_prior_weight: float = 0.01
-
-
-@dataclass(frozen=True)
-class DiffusionConfig:
-    """Conditional DDPM settings with a DDIM sampler.
-
-    ``latent_mode: projected`` confines the initial noise to a subspace of the
-    shared ``cvae.latent_dim`` so ``DirectSupportPolicy`` can search it.
-    ``full`` keeps the unrestricted noise and is only usable for
-    generative-quality measurement, never for the DFL stage.
-    """
-
-    timesteps: int = 400
-    sampling_steps: int = 50
-    beta_schedule: str = "cosine"
-    latent_mode: str = "projected"
-    blocks: int = 3
-    # Bound on the recovered x0, in standardized units. It stabilises both the
-    # sampler and the auxiliary shape term; the data itself never leaves +-5.
-    x_zero_clamp: float = 5.0
-    # The shape term is a Huber loss on scaled summaries, so this multiplies a
-    # quantity of order one against the field-weighted noise objective.
-    physics_weight: float = 0.1
-
-
-@dataclass(frozen=True)
 class GeneratorConfig:
     kind: str = "cvae"
-    gan: GANConfig = field(default_factory=GANConfig)
-    diffusion: DiffusionConfig = field(default_factory=DiffusionConfig)
 
 
 @dataclass(frozen=True)
 class DFLConfig:
     num_support_scenarios: int
     epochs: int
-    validation_batch_size: int
     final_validation_size: int
-    learning_rate: float
-    baseline_momentum: float
-    initial_exploration_std: float
-    minimum_exploration_std: float
-    exploration_decay: float
-    diversity_margin: float
-    diversity_weight: float
-    weight_entropy_weight: float
     device: str
-    policy_samples_per_epoch: int = 1
-    latent_prior_weight: float = 0.001
-    method: str = "reinforce"
-    # Which rule picks the scenarios the REINFORCE policy starts from. One of
-    # dfl.SUPPORT_INIT_RULES. Defaults to "farthest" so existing runs reproduce,
-    # but that rule is a bad seed at small K -- it returns the row farthest from
-    # the centroid, an extreme-net-load day with a flat price curve, and price
-    # spread is what storage value tracks. Only the starting point moves; the
-    # validation and test subsets are chosen elsewhere and are unaffected.
-    support_init_rule: str = "farthest"
-    # Solver tolerance for the solves inside the training loop only. Zero keeps
-    # planning.solver_relative_gap, which is what every run before this used.
-    #
-    # Training and reporting want different things from the tolerance. A run
-    # solves the planning model once per policy sample per epoch -- hundreds of
-    # times -- and only needs the ranking among an epoch's samples to be roughly
-    # right, since the score-function estimator averages over epochs anyway. The
-    # reported numbers need to be exact, because differences of a few thousand
-    # decide them: at 1e-3 two runs that differed only in solver threads
-    # disagreed by 2,188 and swapped two rules' ranking.
-    #
-    # Tightening the reported tolerance to 1e-4 made single K=1 planning solves
-    # run past 900 s without converging. Hundreds of those is not a training
-    # loop, so the loop gets the looser value and evaluate_stage keeps the tight
-    # one. The cost is that finalist selection also runs loose, so a run may
-    # keep a slightly worse design than it could have -- that is part of what
-    # the method achieves under its own budget, and the number reported for it
-    # is still measured exactly.
+    method: str = "recourse_feasibility"
     training_relative_gap: float = 0.0
-    # Optional, looser certificate for the separate fixed-design validation
-    # dispatches used as REINFORCE rewards. Zero inherits training_relative_gap.
-    validation_relative_gap: float = 0.0
-    # Use the model's priced physical carbon-excess variable during both
-    # support planning and common validation. This avoids making every policy
-    # sample infeasible under an unreachable hourly hard cap.
     training_allow_carbon_slack: bool = False
-    candidate_pool_size: int = 12
-    bo_initial_evaluations: int = 6
-    bo_iterations: int = 6
-    bo_parameter_bound: float = 3.0
-    bo_candidate_draws: int = 512
-    bo_kernel_length_scale: float = 1.0
-    bo_exploration: float = 1.5
-    bo_weight_floor: float = 0.02
-    bo_finalists: int = 2
-    decision_deadband_relative: float = 0.005
-    # Number of distinct REINFORCE designs retained for a common final
-    # validation. Keeping more than the single best noisy minibatch incumbent
-    # prevents a late lucky sample from replacing a consistently good design.
-    reinforce_finalists: int = 4
-    # Optional decision-scale early stopping. A material improvement must exceed
-    # decision_deadband_relative times the best validation objective; smaller
-    # movements are below the resolution at which candidates are ranked.
-    early_stopping_patience: int = 0
-    early_stopping_min_epochs: int = 20
     # How fixed validation and reported test subsets approximate the held-out
     # distribution. ``farthest`` reproduces historical runs and assigns uniform
     # weights to deliberately extreme points. ``kmeans`` uses cluster medoids
     # with cluster-mass weights and is the statistically meaningful default for
     # dataset v2 configurations.
     evaluation_selection_rule: str = "farthest"
+    # Direct CVAE fine-tuning with recourse-aware feasibility feedback.  A zero
+    # lambda is an exact no-op after generator pretraining, which defines the
+    # CVAE-only ablation without extra optimization epochs.
+    lambda_dfl: float = 0.0
+    feasibility_load_weight: float = 1.0
+    feasibility_pv_weight: float = 1.0
+    feasibility_carbon_weight: float = 1.0
+    # Expensive planning/recourse solves are performed once every N epochs,
+    # after the optional statistical-only warm-up.
+    dfl_start_epoch: int = 0
+    dfl_eval_interval: int = 1
+    decision_batch_size: int = 4
+    use_solution_cache: bool = True
 
 
 @dataclass(frozen=True)
@@ -371,6 +272,14 @@ class PlanningConfig:
     # P/E, but keeps the physical feeder-wide COPF power balance.  It is the
     # appropriate mode for the exact nodal-carbon/vintage benchmark.
     storage_service_mode: str = "shared_feeder"
+    # Physical topology solved by the planning oracle. ``ieee13`` retains the
+    # original unbalanced feeder model; ``single_pcc`` aggregates the facility,
+    # PV, diesel generator and battery behind one point of common coupling.
+    topology: str = "ieee13"
+    # Direct combustion intensity of the backup diesel generator. Keeping this
+    # in configuration makes the PCC carbon ledger auditable and avoids the
+    # historical hard-coded 0.72 tCO2/MWh constant.
+    diesel_carbon_t_per_mwh: float = 0.72
 
 
 @dataclass(frozen=True)
@@ -381,40 +290,12 @@ class CostConfig:
     energy_dollars_per_mwh: float
     degradation_dollars_per_mwh: float
     demand_dollars_per_mw_year: float
-    delay_dollars_per_task_hour: float
     curtailment_dollars_per_mwh: float
     shedding_dollars_per_mwh: float
-    validation_carbon_slack_dollars: float
-    # Value of lost load for the non-data-centre feeder, in dollars per MWh.
-    # Without it an outage has to serve every feeder bus in full from the backup
-    # generator, PV and storage, which is simply infeasible on this feeder and
-    # made every multi-hour outage scenario unsolvable rather than expensive.
-    # Published VOLL for mixed residential/commercial distribution load sits
-    # around 3,000-10,000 $/MWh. Zero disables feeder shedding entirely and
-    # reproduces the original model.
-    feeder_shedding_dollars_per_mwh: float = 0.0
-    # Share of each bus-phase load that may be shed. The remainder is critical
-    # and must be served, so an outage cannot be made cheap by dropping the
-    # whole feeder.
-    feeder_curtailable_fraction: float = 0.0
     generator_dollars_per_mwh: float = 125.0
-    # Dollars per tonne of CO2 emitted beyond dc_carbon_cap. Zero keeps the
-    # historical behaviour, where exceeding the cap costs
-    # validation_carbon_slack_dollars times a DIMENSIONLESS slack that the
-    # constraint scales by a big-M -- so the implied price per tonne moves with
-    # that big-M rather than being a property of the world, and the "value of
-    # storage" it produces is an artifact of the bound. Measured on this case:
-    # at dc_carbon_cap 0.30 the cap did not bind and storage was worth 82,652;
-    # at 0.22 it bound and storage was worth 7,238,309, essentially all of it
-    # avoided penalty. There is no cap in between where the cap binds and
-    # compliance is still reachable without penalty, so a hard cap alone cannot
-    # produce a defensible number here.
-    #
-    # Set this positive to price the excess directly in tonnes instead. The
-    # excess variable then carries physical units, needs no big-M, and the price
-    # can cite something real: roughly 185 $/tCO2 for the US social cost of
-    # carbon, or 50-100 $/tCO2 for traded credits.
-    carbon_price_dollars_per_t: float = 0.0
+    # Diagnostic slack for an urgent hourly cap, priced in physical $/tCO2.
+    # It exists only when allow_carbon_slack=True; otherwise the cap is hard.
+    carbon_excess_dollars_per_t: float = 300000.0
     # Multiplies site, power and energy CAPEX together for a declared
     # sensitivity case. Operating, degradation and carbon prices are unchanged.
     battery_capex_scale: float = 1.0
@@ -443,11 +324,7 @@ def _construct(section_type: type, raw: dict[str, Any]) -> Any:
 
 def _generator_config(raw: dict[str, Any] | None) -> GeneratorConfig:
     payload = dict(raw or {})
-    return GeneratorConfig(
-        kind=str(payload.get("kind", "cvae")),
-        gan=_construct(GANConfig, dict(payload.get("gan", {}))),
-        diffusion=_construct(DiffusionConfig, dict(payload.get("diffusion", {}))),
-    )
+    return GeneratorConfig(kind=str(payload.get("kind", "cvae")))
 
 
 def load_config(path: str | Path) -> ExperimentConfig:

@@ -3,9 +3,40 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import torch
 
 from storage_dfl.data.schema import Scenario, ScenarioPool
 from storage_dfl.network import Feeder
+
+
+@dataclass(frozen=True)
+class TorchPhysicalTrajectories:
+    """Differentiable physical channels consumed by the PCC surrogate.
+
+    The MILP receives detached ``Scenario`` objects.  These tensors retain the
+    same inverse normalization and physical bounds so the surrogate sees the
+    load, PV and grid-carbon values that the solver saw, without crossing the
+    NumPy/Gurobi boundary.
+    """
+
+    active_load_mw: torch.Tensor
+    pv_available_mw: torch.Tensor
+    grid_carbon_t_per_mwh: torch.Tensor
+
+    @property
+    def aggregate_load_mw(self) -> torch.Tensor:
+        return self.active_load_mw.sum(dim=(-1, -2))
+
+    @property
+    def aggregate_pv_mw(self) -> torch.Tensor:
+        return self.pv_available_mw.sum(dim=(-1, -2))
+
+    def detach(self) -> "TorchPhysicalTrajectories":
+        return TorchPhysicalTrajectories(
+            active_load_mw=self.active_load_mw.detach(),
+            pv_available_mw=self.pv_available_mw.detach(),
+            grid_carbon_t_per_mwh=self.grid_carbon_t_per_mwh.detach(),
+        )
 
 
 @dataclass(frozen=True)
@@ -203,6 +234,65 @@ class ScenarioCodec:
         c = (contexts - self.context_mean) / self.context_std
         return x.astype(np.float32), c.astype(np.float32)
 
+    def physical_torch(
+        self, normalized_trajectories: torch.Tensor
+    ) -> TorchPhysicalTrajectories:
+        """Inverse-transform decision channels while preserving autograd.
+
+        ``torch.clamp`` intentionally has zero gradient outside the declared
+        physical box.  This is an explicit bounded surrogate, not a straight-
+        through estimator pretending that NumPy clipping is differentiable.
+        """
+
+        if normalized_trajectories.ndim != 2:
+            raise ValueError("Torch trajectories must have shape [scenario, feature].")
+        if normalized_trajectories.shape[1] != self.trajectory_dim:
+            raise ValueError("Torch trajectory width does not match the codec.")
+        device = normalized_trajectories.device
+        dtype = normalized_trajectories.dtype
+        mean = torch.as_tensor(
+            self.trajectory_mean, dtype=dtype, device=device
+        )
+        std = torch.as_tensor(self.trajectory_std, dtype=dtype, device=device)
+        raw = normalized_trajectories * std + mean
+        buses = len(self.feeder.buses)
+        phases = len(self.feeder.phases)
+        field_size = buses * phases
+        matrix = raw.reshape(-1, self.horizon, 3 * field_size + 4)
+
+        active_flat = matrix[..., :field_size]
+        pv_flat = matrix[..., 2 * field_size : 3 * field_size]
+        active_limit = torch.as_tensor(
+            2.0 * self.feeder.base_active_load_mw.reshape(-1) + 0.05,
+            dtype=dtype,
+            device=device,
+        )
+        pv_limit = torch.as_tensor(
+            1.30 * self.feeder.pv_capacity_mw.reshape(-1),
+            dtype=dtype,
+            device=device,
+        )
+        active_mask = torch.as_tensor(
+            self.feeder.base_active_load_mw.reshape(-1) > 0.0,
+            dtype=dtype,
+            device=device,
+        )
+        pv_mask = torch.as_tensor(
+            self.feeder.pv_capacity_mw.reshape(-1) > 0.0,
+            dtype=dtype,
+            device=device,
+        )
+        active = torch.minimum(active_flat.clamp_min(0.0), active_limit)
+        pv = torch.minimum(pv_flat.clamp_min(0.0), pv_limit)
+        active = active * active_mask
+        pv = pv * pv_mask
+        carbon = matrix[..., 3 * field_size + 3].clamp(0.02, 1.10)
+        return TorchPhysicalTrajectories(
+            active_load_mw=active.reshape(-1, self.horizon, buses, phases),
+            pv_available_mw=pv.reshape(-1, self.horizon, buses, phases),
+            grid_carbon_t_per_mwh=carbon,
+        )
+
     def decode_batch(
         self,
         normalized_trajectories: np.ndarray,
@@ -313,8 +403,9 @@ class ScenarioCodec:
                     float(net_load.max()),
                     float(np.quantile(net_load, 0.95)),
                     float(np.ptp(scenario.grid_price_per_mwh)),
-                    float(scenario.grid_carbon_t_per_mwh.max()),
-                    float(scenario.workload_arrival.max()),
+                float(scenario.grid_carbon_t_per_mwh.max()),
+                float(scenario.workload_arrival.max()),
+                float(np.count_nonzero(scenario.grid_available < 0.5)),
                 )
             )
         decision_features = np.asarray(metrics, dtype=np.float32)

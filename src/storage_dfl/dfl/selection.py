@@ -20,66 +20,6 @@ from storage_dfl.data import Scenario, ScenarioCodec, ScenarioPool
 
 SELECTION_RULES = ("farthest", "kmeans", "aggregate", "random")
 
-# Rules usable to SEED the DFL support. Narrower than SELECTION_RULES because
-# the seed has to be a real pool member: the trainer encodes it to obtain a
-# starting latent, and ``aggregate`` returns synthetic cluster means that have
-# no index to encode from.
-SUPPORT_INIT_RULES = ("farthest", "kmeans", "random")
-
-
-def support_init_indices(
-    rule: str,
-    pool: ScenarioPool,
-    codec: ScenarioCodec,
-    count: int,
-    seed: int = 0,
-) -> np.ndarray:
-    """Pool indices that seed the DFL support set.
-
-    Separate from ``ScenarioCodec.support_indices`` on purpose. That method also
-    chooses the fixed validation subset and the reported test subset, so changing
-    it would move the evaluation sets and silently invalidate every sweep already
-    recorded. This function only ever picks a starting point for the policy.
-
-    ``farthest`` is the historical default and stays the default so existing runs
-    reproduce. It is a poor seed at K=1: it returns the row farthest from the
-    centroid, which in this dataset is an extreme-net-load day whose price spread
-    is flat -- and price spread is what storage value tracks (r = +0.86 against
-    out-of-sample storage value across the K=1 sweep rows, versus r = -0.51 for
-    peak net load). The K=1 seed it picks scores 0 on its own.
-    """
-
-    if rule not in SUPPORT_INIT_RULES:
-        raise ValueError(
-            f"support_init_rule must be one of {SUPPORT_INIT_RULES}, got {rule!r}."
-        )
-    count = min(int(count), len(pool.scenarios))
-    if count <= 0:
-        raise ValueError("count must be positive.")
-
-    if rule == "farthest":
-        return codec.support_indices(pool, count)
-
-    if rule == "random":
-        rng = np.random.default_rng(seed)
-        return np.sort(
-            rng.choice(len(pool.scenarios), size=count, replace=False)
-        ).astype(np.int64)
-
-    # ``kmeans``: the medoid of each cluster, matching what select_scenarios
-    # returns for the same rule so the seed and the baseline are the same points.
-    features = decision_feature_matrix(pool, codec)
-    labels, centres = _kmeans(features, count, seed)
-    indices = []
-    for index in range(count):
-        members = np.flatnonzero(labels == index)
-        if members.size == 0:
-            members = np.arange(features.shape[0])
-        distances = ((features[members] - centres[index]) ** 2).sum(axis=1)
-        indices.append(int(members[int(distances.argmin())]))
-    return np.asarray(indices, dtype=np.int64)
-
-
 def decision_feature_matrix(pool: ScenarioPool, codec: ScenarioCodec) -> np.ndarray:
     """Standardized context plus decision-relevant summaries.
 
@@ -102,6 +42,7 @@ def decision_feature_matrix(pool: ScenarioPool, codec: ScenarioCodec) -> np.ndar
                 float(np.ptp(scenario.grid_price_per_mwh)),
                 float(scenario.grid_carbon_t_per_mwh.max()),
                 float(scenario.workload_arrival.max()),
+                float(np.count_nonzero(scenario.grid_available < 0.5)),
             )
         )
     features = np.asarray(metrics, dtype=np.float64)
@@ -172,7 +113,7 @@ def select_scenarios(
     if rule == "farthest":
         indices = codec.support_indices(pool, count).tolist()
         scenarios = pool.subset(indices)
-        return scenarios, (1.0 / count,) * count, tuple(pool.names(indices))
+        return scenarios, pool.normalized_weights(indices), tuple(pool.names(indices))
 
     if rule == "random":
         rng = np.random.default_rng(seed)
@@ -180,14 +121,15 @@ def select_scenarios(
             rng.choice(len(pool.scenarios), size=count, replace=False).tolist()
         )
         scenarios = pool.subset(indices)
-        return scenarios, (1.0 / count,) * count, tuple(pool.names(indices))
+        return scenarios, pool.normalized_weights(indices), tuple(pool.names(indices))
 
     features = decision_feature_matrix(pool, codec)
     labels, centres = _kmeans(features, count, seed)
     # Cluster shares are the natural probabilities: they make the reduced set an
     # estimator of the observed distribution rather than an arbitrary subset.
+    probability = np.asarray(pool.normalized_weights(), dtype=float)
     weights = np.array(
-        [max(float((labels == index).sum()), 1.0) for index in range(count)]
+        [float(probability[labels == index].sum()) for index in range(count)]
     )
     weights = weights / weights.sum()
 

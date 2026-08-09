@@ -159,6 +159,37 @@ def _components(
     }
 
 
+def cvae_loss_components(
+    model: ConditionalVAE,
+    batch_x: torch.Tensor,
+    batch_c: torch.Tensor,
+    layout: TrajectoryLayout,
+    shape: ShapeStatistics,
+    field_weights: Any,
+    config: CVAEConfig,
+    horizon: int,
+    effective_beta: float,
+    device: torch.device,
+    *,
+    sample_latent: bool = True,
+) -> dict[str, torch.Tensor]:
+    """Public statistical objective reused by recourse-aware fine-tuning."""
+
+    return _components(
+        model,
+        batch_x,
+        batch_c,
+        layout,
+        shape,
+        field_weights,
+        config,
+        horizon,
+        effective_beta,
+        device,
+        sample_latent=sample_latent,
+    )
+
+
 @torch.no_grad()
 def _evaluate(
     model: ConditionalVAE,

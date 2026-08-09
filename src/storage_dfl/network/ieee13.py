@@ -68,8 +68,8 @@ class Feeder:
         return self.pv_capacity_mw.sum(axis=1)
 
     def validate(self) -> None:
-        if len(self.buses) != 13 or self.phases != PHASES:
-            raise ValueError("The feeder must contain the IEEE13 buses and phases A/B/C.")
+        if not self.buses or self.phases != PHASES:
+            raise ValueError("A feeder must contain at least one bus and phases A/B/C.")
         if len(self.lines) != len(self.buses) - 1:
             raise ValueError("LinDistFlow requires a radial feeder with N-1 lines.")
         if self.root not in self.buses:
@@ -202,3 +202,33 @@ def ieee13_balanced_microgrid() -> Feeder:
     """Backward-compatible function name; now returns the phase-resolved feeder."""
 
     return ieee13_unbalanced_microgrid()
+
+
+def single_pcc_microgrid() -> Feeder:
+    """Return the single-bus, behind-the-meter data-centre microgrid.
+
+    The three phase slots are retained in the scenario schema so the existing
+    CVAE/DFL pipeline can read both topologies. The PCC planning oracle sums the
+    slots and does not model reactive power or phase imbalance.
+    """
+
+    phase_mask = np.ones((1, 3), dtype=bool)
+    feeder = Feeder(
+        buses=("PCC",),
+        phases=PHASES,
+        root="PCC",
+        lines=(),
+        phase_mask=phase_mask,
+        # These arrays define codec masks and physically reasonable clipping
+        # bounds. Actual data-centre demand is built from workload and PUE when
+        # historical scenarios are aggregated in stages._experiment_data.
+        base_active_load_mw=np.full((1, 3), 1.0 / 3.0, dtype=float),
+        base_reactive_load_mvar=np.zeros((1, 3), dtype=float),
+        # Aggregate nameplate PV on the original IEEE-13 case: 0.25+0.65+0.75.
+        pv_capacity_mw=np.full((1, 3), 1.65 / 3.0, dtype=float),
+        storage_candidates=("PCC",),
+        data_center_bus="PCC",
+        generator_bus="PCC",
+    )
+    feeder.validate()
+    return feeder

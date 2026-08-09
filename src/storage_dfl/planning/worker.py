@@ -5,7 +5,7 @@ import os
 import pickle
 from pathlib import Path
 
-from storage_dfl.planning.model import StoragePlanningOracle
+from storage_dfl.planning import StoragePlanningOracle
 
 
 def main() -> None:

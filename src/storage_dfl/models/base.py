@@ -23,7 +23,7 @@ import numpy as np
 import torch
 from torch import nn
 
-GENERATOR_KINDS = ("cvae", "gan", "diffusion")
+GENERATOR_KINDS = ("cvae",)
 
 
 @dataclass(frozen=True)
@@ -230,6 +230,8 @@ def masked_mse(
     if mask is not None:
         prediction = prediction[..., mask]
         target = target[..., mask]
+        if prediction.shape[-1] == 0:
+            return torch.zeros((), dtype=prediction.dtype, device=prediction.device)
     return torch.mean((prediction - target) ** 2)
 
 

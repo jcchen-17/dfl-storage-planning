@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "storage-dfl-demo"
 version = "0.1.0"
-description = "Decision-focused scenario construction for batch-resolved shared-storage planning"
+description = "Decision-focused scenario construction for carbon-aware single-PCC storage planning"
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=2.0",

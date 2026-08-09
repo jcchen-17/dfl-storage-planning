@@ -8,6 +8,12 @@ def main() -> None:
     parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered.yaml")
     parser.add_argument("--no-tensorboard", action="store_true")
     parser.add_argument(
+        "--method",
+        choices=("recourse_feasibility",),
+        default=None,
+        help="override dfl.method while retaining the same generator and MILP",
+    )
+    parser.add_argument(
         "--capex-scale",
         type=float,
         default=1.0,
@@ -18,6 +24,7 @@ def main() -> None:
     result = train_dfl_stage(
         args.config,
         tensorboard=not args.no_tensorboard,
+        method_override=args.method,
         battery_capex_scale=args.capex_scale,
     )
     print(f"generator: {result['generator']}")

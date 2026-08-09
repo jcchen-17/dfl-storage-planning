@@ -36,9 +36,9 @@ def load_historical_scenarios(
         names = np.asarray(payload["scenario_name"]).astype(str)
         # Optional, so every dataset built before rare events existed keeps the
         # planning model's uniform 8760 / horizon.
-        occurrences = (
-            np.asarray(payload["annual_occurrences"][selected], dtype=float)
-            if "annual_occurrences" in payload.files
+        sample_weights = (
+            np.asarray(payload["sample_weight"][selected], dtype=float)
+            if "sample_weight" in payload.files
             else None
         )
         arrays = {
@@ -67,8 +67,14 @@ def load_historical_scenarios(
                 grid_price_per_mwh=np.asarray(arrays["grid_price_per_mwh"][local_index, :selected_horizon], dtype=float),
                 grid_carbon_t_per_mwh=np.asarray(arrays["grid_carbon_t_per_mwh"][local_index, :selected_horizon], dtype=float),
                 grid_available=np.asarray(arrays["grid_available"][local_index, :selected_horizon], dtype=float),
-                annual_occurrences=(
-                    float(occurrences[local_index]) if occurrences is not None else None
+                # Probabilities, rather than per-row annual occurrences, remain
+                # composable when several normal/outage representatives share
+                # one planning model.
+                annual_occurrences=None,
+                probability_weight=(
+                    float(sample_weights[local_index])
+                    if sample_weights is not None
+                    else None
                 ),
             )
             for local_index, source_index in enumerate(selected)

@@ -9,7 +9,11 @@ from storage_dfl.stages import (
     ArtifactPaths, _experiment_data, _load_codec, load_generator,
 )
 
-cfg = sys.argv[1] if len(sys.argv) > 1 else "configs/generator_compare_k1t2.yaml"
+cfg = (
+    sys.argv[1]
+    if len(sys.argv) > 1
+    else "configs/dataset_v2_dfl_hourly_layered.yaml"
+)
 c = load_config(cfg)
 paths = ArtifactPaths(c.output_dir)
 feeder, pool = _experiment_data(c, c.data.validation_split)

@@ -7,6 +7,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate trained supports in storage planning.")
     parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered.yaml")
     parser.add_argument(
+        "--method",
+        choices=("recourse_feasibility",),
+        default=None,
+    )
+    parser.add_argument(
         "--memory-limit",
         type=float,
         default=None,
@@ -33,6 +38,7 @@ def main() -> None:
     print(f"Starting evaluation with {args.config}...", flush=True)
     result = evaluate_stage(
         args.config,
+        method_override=args.method,
         memory_limit_mb=args.memory_limit,
         scenarios=args.scenarios,
     )
@@ -54,6 +60,19 @@ def main() -> None:
     print(f"no-storage reference: {reference['objective']:.2f}")
     if result["storage_value"] is not None:
         print(f"storage value: {result['storage_value']:.2f}")
+    if result.get("decision_regret") is not None:
+        print(f"normalized decision regret: {result['decision_regret']:.6f}")
+    diagnostics = validation.get("recourse_diagnostics")
+    if diagnostics is not None:
+        print(f"load shedding MWh: {diagnostics['load_shedding_mwh']:.6f}")
+        print(f"carbon excess tCO2: {diagnostics['carbon_excess_t']:.6f}")
+        print(f"PV curtailment MWh: {diagnostics['pv_curtailment_mwh']:.6f}")
+        print(f"served demand MWh: {diagnostics['served_demand_mwh']:.6f}")
+        print(f"recourse operating cost: {diagnostics['operating_cost']:.2f}")
+        print(
+            f"recourse total planning cost: "
+            f"{diagnostics['total_planning_cost']:.2f}"
+        )
     accepted_gap = result.get("evaluation_relative_gap", 0.0)
     # Time/memory-limit incumbents are comparable when the solver has already
     # certified the requested relative gap; status text alone is insufficient.

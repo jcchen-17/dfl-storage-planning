@@ -216,6 +216,7 @@ def main() -> None:
         "feature_summary": summaries,
         "effective_rank": effective_ranks,
     }
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False),
         encoding="utf-8",

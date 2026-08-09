@@ -27,9 +27,7 @@ def run(
     result = evaluate_stage(config_path, generator_override=generator)
     site = result["planning"]["design"]["site"]
     installed = [bus for bus, value in site.items() if value > 0]
-    print(
-        f"{trained['generator']} + decision-focused scenario-selection pipeline completed"
-    )
+    print(f"{trained['generator']} + {dfl['method']} pipeline completed")
     print(f"installed buses: {installed}")
     print(f"planning objective: {result['planning']['objective']:.2f}")
     print(f"validation objective: {result['out_of_sample_validation']['objective']:.2f}")
@@ -38,7 +36,11 @@ def run(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/demo.yaml", help="YAML configuration path")
+    parser.add_argument(
+        "--config",
+        default="configs/dataset_v2_dfl_hourly_layered.yaml",
+        help="YAML configuration path",
+    )
     parser.add_argument("--no-tensorboard", action="store_true", help="Disable TensorBoard logging")
     parser.add_argument(
         "--generator",
