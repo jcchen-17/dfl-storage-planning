@@ -50,6 +50,7 @@ _STATUS_NAMES = {
 _PARAMETER_NAMES = {
     "limits/time": "TimeLimit",
     "limits/gap": "MIPGap",
+    "limits/absgap": "MIPGapAbs",
     "parallel/maxnthreads": "Threads",
 }
 
@@ -232,6 +233,21 @@ class GurobiModel:
         except (AttributeError, self._gp.GurobiError):
             # A continuous relaxation has no MIP gap; it is solved exactly.
             return 0.0
+
+    def getDualbound(self) -> float:
+        """Best proven bound, needed to combine bounds across subproblems.
+
+        Enumerating the storage site splits the problem into restricted cases
+        whose feasible regions partition the original. The global bound is then
+        the weakest of the parts, min_i L_i, and the winning part's own gap says
+        nothing about the whole. Deriving the bound from the gap instead loses
+        precision exactly where it is being relied on.
+        """
+
+        try:
+            return float(self._model.ObjBound)
+        except (AttributeError, self._gp.GurobiError):
+            return float(self._model.ObjVal)
 
     def getSolvingTime(self) -> float:
         return float(self._model.Runtime)

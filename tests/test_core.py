@@ -193,7 +193,6 @@ def test_dc_boundary_carbon_formulations_are_supported() -> None:
             config.data_center,
         )
 
-
 def test_codec_restores_dataset_fixed_workload_template() -> None:
     feeder = ieee13_unbalanced_microgrid()
     original = make_toy_scenarios(feeder, num_scenarios=6, horizon=6, seed=909)
@@ -588,6 +587,37 @@ def test_warm_start_cache_is_shared_across_designs() -> None:
     # Idle storage is not a valid seed once the inventory decays.
     assert decaying_oracle._warm_start_supported(None)
     assert not decaying_oracle._warm_start_supported(design)
+
+    forced_planning = replace(
+        config.planning,
+        min_storage_sites=1,
+        max_storage_sites=1,
+        self_discharge=0.0,
+    )
+    forced_oracle = StoragePlanningOracle(
+        feeder, forced_planning, config.costs, config.data
+    )
+    seed = forced_oracle._minimum_forced_design()
+    assert seed is not None
+    assert sum(seed.site.values()) == 1
+    installed_bus = seed.installed_buses[0]
+    assert seed.power_mw[installed_bus] >= forced_planning.min_power_mw
+    assert seed.energy_mwh[installed_bus] >= forced_planning.min_energy_mwh
+    assert seed.energy_mwh[installed_bus] >= (
+        forced_planning.min_duration_hours * seed.power_mw[installed_bus]
+    )
+    assert seed.energy_mwh[installed_bus] <= (
+        forced_planning.max_duration_hours * seed.power_mw[installed_bus]
+    )
+    assert forced_oracle._warm_start_supported(None)
+
+    forced_decaying = StoragePlanningOracle(
+        feeder,
+        replace(forced_planning, self_discharge=0.01),
+        config.costs,
+        config.data,
+    )
+    assert not forced_decaying._warm_start_supported(None)
 
 
 def test_reinforce_epoch_batches_its_validations_and_keeps_them_aligned() -> None:

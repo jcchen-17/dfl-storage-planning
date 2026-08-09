@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import pickle
@@ -361,10 +361,20 @@ class StoragePlanningOracle:
         )
         if fixed_design is None and not warm_start_accepted:
             warm_start = model.createPartialSol()
+            seed_design = self._minimum_forced_design()
             for bus in self.feeder.storage_candidates:
-                model.setSolVal(warm_start, artifacts.site[bus], 0.0)
-                model.setSolVal(warm_start, artifacts.power_capacity[bus], 0.0)
-                model.setSolVal(warm_start, artifacts.energy_capacity[bus], 0.0)
+                installed = 0 if seed_design is None else seed_design.site[bus]
+                model.setSolVal(warm_start, artifacts.site[bus], float(installed))
+                model.setSolVal(
+                    warm_start,
+                    artifacts.power_capacity[bus],
+                    0.0 if seed_design is None else seed_design.power_mw[bus],
+                )
+                model.setSolVal(
+                    warm_start,
+                    artifacts.energy_capacity[bus],
+                    0.0 if seed_design is None else seed_design.energy_mwh[bus],
+                )
             model.addSol(warm_start)
         model.optimize()
         status = str(model.getStatus())
@@ -427,6 +437,7 @@ class StoragePlanningOracle:
                 scenario_names=scenario_names,
                 solve_time_seconds=float(model.getSolvingTime()),
                 relative_gap=float(model.getGap()),
+                best_bound=float(model.getDualbound()),
             )
         if use_cache:
             self._cache[cache_key] = result
@@ -445,7 +456,50 @@ class StoragePlanningOracle:
         a bootstrap solve whose result cannot be used.
         """
 
-        return fixed_design is None or self.planning.self_discharge == 0.0
+        idle_design = fixed_design or self._minimum_forced_design()
+        return idle_design is None or self.planning.self_discharge == 0.0
+
+    def _minimum_forced_design(self) -> StorageDesign | None:
+        """Return the smallest valid idle design required by ``min_storage_sites``.
+
+        A storage-disabled dispatch can be lifted into a feasible incumbent for
+        a forced-build part: install the minimum admissible P/E, hold its initial
+        inventory constant, and set every charge and discharge to zero.  This is
+        a warm start only -- P/E remain free in the target optimization.
+        """
+
+        required = int(self.planning.min_storage_sites)
+        if required <= 0:
+            return None
+        candidates = tuple(self.feeder.storage_candidates)
+        if required > len(candidates):
+            raise ValueError(
+                "min_storage_sites exceeds the number of storage candidates, got "
+                f"{required} > {len(candidates)}."
+            )
+
+        pcfg = self.planning
+        if pcfg.max_duration_hours <= 0.0:
+            raise ValueError("max_duration_hours must be positive for a forced design.")
+        power = max(pcfg.min_power_mw, pcfg.min_energy_mwh / pcfg.max_duration_hours)
+        energy = max(pcfg.min_energy_mwh, pcfg.min_duration_hours * power)
+        tolerance = 1.0e-9
+        if (
+            power > pcfg.max_power_mw + tolerance
+            or energy > pcfg.max_energy_mwh + tolerance
+            or energy > pcfg.max_duration_hours * power + tolerance
+        ):
+            raise ValueError(
+                "Storage P/E bounds admit no minimum forced-build design: "
+                f"P={power:g}, E={energy:g}."
+            )
+
+        selected = set(candidates[:required])
+        return StorageDesign(
+            site={bus: int(bus in selected) for bus in candidates},
+            power_mw={bus: (power if bus in selected else 0.0) for bus in candidates},
+            energy_mwh={bus: (energy if bus in selected else 0.0) for bus in candidates},
+        )
 
     def _warm_start_key(
         self,
@@ -492,6 +546,7 @@ class StoragePlanningOracle:
         bootstrap_planning = replace(
             self.planning,
             max_storage_sites=0,
+            min_storage_sites=0,
             solver_time_limit_seconds=bootstrap_limit,
             solver_relative_gap=self.planning.solver_relative_gap,
         )
@@ -541,6 +596,7 @@ class StoragePlanningOracle:
 
         if bootstrap_values is None or not self._warm_start_supported(fixed_design):
             return False
+        idle_design = fixed_design or self._minimum_forced_design()
         target_variables = tuple(target_model.getVars())
         target_by_name = {
             _variable_name(variable): variable for variable in target_variables
@@ -557,11 +613,11 @@ class StoragePlanningOracle:
             target = target_by_name.get(name)
             if target is not None:
                 target_model.setSolVal(warm_start, target, value)
-        if fixed_design is not None:
+        if idle_design is not None:
             for bus in self.feeder.storage_candidates:
-                installed = int(fixed_design.site[bus] > 0)
-                power = float(fixed_design.power_mw[bus]) if installed else 0.0
-                energy = float(fixed_design.energy_mwh[bus]) if installed else 0.0
+                installed = int(idle_design.site[bus] > 0)
+                power = float(idle_design.power_mw[bus]) if installed else 0.0
+                energy = float(idle_design.energy_mwh[bus]) if installed else 0.0
                 inventory = self.planning.initial_soc * energy
                 carbon_mass = self.planning.initial_carbon_intensity * inventory
                 for name, value in (
@@ -597,7 +653,7 @@ class StoragePlanningOracle:
         accepted = bool(target_model.addSol(warm_start))
         if not accepted:
             print(
-                "WARNING: SCIP rejected the complete no-storage warm start; "
+                "WARNING: solver rejected the complete idle-storage warm start; "
                 "the storage-enabled incumbent may be weaker than a separately "
                 "solved no-storage plan.",
                 flush=True,
@@ -989,6 +1045,8 @@ class StoragePlanningOracle:
             model.hideOutput()
         model.setParam("limits/time", float(pcfg.solver_time_limit_seconds))
         model.setParam("limits/gap", float(pcfg.solver_relative_gap))
+        if float(pcfg.solver_absolute_gap_dollars) > 0.0:
+            model.setParam("limits/absgap", float(pcfg.solver_absolute_gap_dollars))
         if float(pcfg.solver_memory_limit_mb) > 0.0:
             # Without this SCIP aborts the process when an allocation fails, which
             # takes the whole run with it. Bounded, it stops cleanly and keeps the
@@ -1028,6 +1086,13 @@ class StoragePlanningOracle:
             model.addCons(ecap[bus] >= pcfg.min_duration_hours * pcap[bus])
             model.addCons(ecap[bus] <= pcfg.max_duration_hours * pcap[bus])
         model.addCons(quicksum(site.values()) <= pcfg.max_storage_sites)
+        if pcfg.min_storage_sites > 0:
+            if pcfg.min_storage_sites > pcfg.max_storage_sites:
+                raise ValueError(
+                    "min_storage_sites cannot exceed max_storage_sites, got "
+                    f"{pcfg.min_storage_sites} > {pcfg.max_storage_sites}."
+                )
+            model.addCons(quicksum(site.values()) >= pcfg.min_storage_sites)
         if pcfg.storage_service_mode in {"dedicated_dc", "fixed_dc_siting"}:
             if feeder.data_center_bus not in candidates:
                 raise ValueError("The data-center bus must be a storage candidate.")
@@ -1102,6 +1167,19 @@ class StoragePlanningOracle:
             sid = scenario_index
             times = range(horizon)
             states = range(horizon + 1)
+            # How many hours of the year this scenario's operating cost stands
+            # for. Absent an explicit count it is the original share-of-a-uniform
+            # -year, and the model is unchanged.
+            #
+            # An explicit count replaces the weight rather than multiplying it:
+            # weights say how much of the *support set* a scenario is, counts say
+            # how much of the *year* its class is, and the counts already answer
+            # that. Normalised weights would otherwise shrink the modelled year
+            # to 1/K of itself as soon as a second scenario was added.
+            if scenario.annual_occurrences is None:
+                scenario_scale = scenario_weight * annual_blocks
+            else:
+                scenario_scale = float(scenario.annual_occurrences)
             layers = range(horizon + 1)
             horizon_carbon_terms: list[object] = []
             horizon_energy_terms: list[object] = []
@@ -1174,20 +1252,65 @@ class StoragePlanningOracle:
                 t: quicksum(grid_phase[phase, t] for phase in bus_phases[root])
                 for t in times
             }
-            generator = {
-                t: model.addVar(
-                    lb=0.0, ub=pcfg.backup_generator_mw, name=f"gen[{sid},{t}]"
-                )
-                for t in times
-            }
-            q_generator = {
-                t: model.addVar(
-                    lb=-pcfg.backup_generator_mvar,
-                    ub=pcfg.backup_generator_mvar,
-                    name=f"qgen[{sid},{t}]",
-                )
-                for t in times
-            }
+            generator_phases = bus_phases[feeder.generator_bus]
+            if pcfg.per_phase_backup_generator:
+                generator_phase = {
+                    (phase, t): model.addVar(
+                        lb=0.0, ub=pcfg.backup_generator_mw, name=f"gen[{sid},{phase},{t}]"
+                    )
+                    for phase in generator_phases
+                    for t in times
+                }
+                q_generator_phase = {
+                    (phase, t): model.addVar(
+                        lb=-pcfg.backup_generator_mvar,
+                        ub=pcfg.backup_generator_mvar,
+                        name=f"qgen[{sid},{phase},{t}]",
+                    )
+                    for phase in generator_phases
+                    for t in times
+                }
+                generator = {
+                    t: quicksum(generator_phase[phase, t] for phase in generator_phases)
+                    for t in times
+                }
+                q_generator = {
+                    t: quicksum(q_generator_phase[phase, t] for phase in generator_phases)
+                    for t in times
+                }
+                for t in times:
+                    model.addCons(
+                        generator[t] <= pcfg.backup_generator_mw,
+                        name=f"gen_total[{sid},{t}]",
+                    )
+                    # Two-sided, because the total is a sum of signed per-phase
+                    # exchanges and only bounding it above would let the machine
+                    # absorb unlimited reactive power on one phase.
+                    model.addCons(
+                        q_generator[t] <= pcfg.backup_generator_mvar,
+                        name=f"qgen_total_upper[{sid},{t}]",
+                    )
+                    model.addCons(
+                        q_generator[t] >= -pcfg.backup_generator_mvar,
+                        name=f"qgen_total_lower[{sid},{t}]",
+                    )
+            else:
+                generator = {
+                    t: model.addVar(
+                        lb=0.0, ub=pcfg.backup_generator_mw, name=f"gen[{sid},{t}]"
+                    )
+                    for t in times
+                }
+                q_generator = {
+                    t: model.addVar(
+                        lb=-pcfg.backup_generator_mvar,
+                        ub=pcfg.backup_generator_mvar,
+                        name=f"qgen[{sid},{t}]",
+                    )
+                    for t in times
+                }
+                generator_phase = None
+                q_generator_phase = None
             pv = {
                 (bus, phase, t): model.addVar(
                     lb=0.0, name=f"pv[{sid},{bus},{phase},{t}]"
@@ -1198,6 +1321,71 @@ class StoragePlanningOracle:
             curtail = {
                 (bus, phase, t): model.addVar(
                     lb=0.0, name=f"curt[{sid},{bus},{phase},{t}]"
+                )
+                for bus, phase in node_phases
+                for t in times
+            }
+            # Reactive capability of the PV and storage inverters. Bounded by the
+            # installed rating rather than the instantaneous output, because an
+            # inverter can supply reactive power at night; that is exactly the
+            # capability an outage needs and the reason the limit is not tied to
+            # pv[bus, phase, t].
+            reactive_ratio = (
+                math.tan(math.acos(max(min(pcfg.inverter_power_factor, 1.0), 0.05)))
+                if pcfg.inverter_power_factor < 1.0
+                else 0.0
+            )
+            q_pv = {
+                (bus, phase, t): model.addVar(
+                    lb=-reactive_ratio
+                    * float(feeder.pv_capacity_mw[bus_index[bus], phase_index[phase]]),
+                    ub=reactive_ratio
+                    * float(feeder.pv_capacity_mw[bus_index[bus], phase_index[phase]]),
+                    name=f"qpv[{sid},{bus},{phase},{t}]",
+                )
+                for bus, phase in node_phases
+                for t in times
+            }
+            q_storage = {
+                (bus, phase, t): model.addVar(
+                    lb=-pcfg.max_power_mw, ub=pcfg.max_power_mw,
+                    name=f"qsto[{sid},{bus},{phase},{t}]",
+                )
+                for bus in candidates
+                for phase in bus_phases[bus]
+                for t in times
+            }
+            # Tied to the chosen rating, so an uninstalled site exchanges nothing
+            # and a site cannot supply reactive support it was never sized for.
+            for bus in candidates:
+                share = reactive_ratio / len(bus_phases[bus])
+                for phase in bus_phases[bus]:
+                    for t in times:
+                        model.addCons(
+                            q_storage[bus, phase, t] <= share * pcap[bus],
+                            name=f"qsto_upper[{sid},{bus},{phase},{t}]",
+                        )
+                        model.addCons(
+                            q_storage[bus, phase, t] >= -share * pcap[bus],
+                            name=f"qsto_lower[{sid},{bus},{phase},{t}]",
+                        )
+            # Feeder load shedding, bounded per bus-phase by the curtailable
+            # share of that hour's load. Priced far above every dispatch cost, so
+            # the solver exhausts storage, PV and the backup generator before it
+            # sheds anything -- an explicit "storage first" constraint would only
+            # duplicate what the price ordering already enforces, at the cost of
+            # more binaries.
+            feeder_shed_limit = (
+                float(ccfg.feeder_curtailable_fraction)
+                if ccfg.feeder_shedding_dollars_per_mwh > 0.0
+                else 0.0
+            )
+            feeder_shed = {
+                (bus, phase, t): model.addVar(
+                    lb=0.0,
+                    ub=feeder_shed_limit
+                    * float(scenario.active_load_mw[t, bus_index[bus], phase_index[phase]]),
+                    name=f"fshed[{sid},{bus},{phase},{t}]",
                 )
                 for bus, phase in node_phases
                 for t in times
@@ -1394,6 +1582,19 @@ class StoragePlanningOracle:
                     <= float(scenario.grid_available[t]) * pcfg.grid_limit_mw,
                     name=f"grid_available[{sid},{t}]",
                 )
+                # An open substation supplies no reactive power either. Bounding
+                # only the active import let the grid keep regulating voltage
+                # through an outage, which is the one thing an outage is not.
+                for phase in bus_phases[root]:
+                    limit = float(scenario.grid_available[t]) * pcfg.grid_limit_mw
+                    model.addCons(
+                        q_grid_phase[phase, t] <= limit,
+                        name=f"qgrid_available_upper[{sid},{phase},{t}]",
+                    )
+                    model.addCons(
+                        q_grid_phase[phase, t] >= -limit,
+                        name=f"qgrid_available_lower[{sid},{phase},{t}]",
+                    )
                 model.addCons(
                     grid[t] <= peak_grid,
                     name=f"grid_peak[{sid},{t}]",
@@ -1922,7 +2123,7 @@ class StoragePlanningOracle:
                             dc_carbon <= pcfg.dc_carbon_cap * (dc_power - shed[t]) + excess
                         )
                         carbon_slack_terms.append(
-                            scenario_weight * annual_blocks
+                            scenario_scale
                             * ccfg.carbon_price_dollars_per_t * excess * dt
                         )
                     else:
@@ -1936,14 +2137,24 @@ class StoragePlanningOracle:
                     load_p = float(scenario.active_load_mw[t, bi, pi])
                     load_q = float(scenario.reactive_load_mvar[t, bi, pi])
                     phase_count = len(bus_phases[bus])
+                    # Dropping load drops its reactive draw with it, at the
+                    # static Q/P ratio this feeder's reactive series was built
+                    # from, so shedding cannot silently improve the power factor.
+                    shed_p = feeder_shed[bus, phase, t]
+                    shed_q = (load_q / load_p) * shed_p if load_p > 0.0 else 0.0
+                    load_p = load_p - shed_p
+                    load_q = load_q - shed_q
                     if bus == feeder.data_center_bus:
                         load_p += (dc_power - shed[t]) / phase_count
-                    local_generation_phase = (
-                        generator[t] / phase_count if bus == feeder.generator_bus else 0.0
-                    )
-                    local_q_generation_phase = (
-                        q_generator[t] / phase_count if bus == feeder.generator_bus else 0.0
-                    )
+                    if bus != feeder.generator_bus:
+                        local_generation_phase = 0.0
+                        local_q_generation_phase = 0.0
+                    elif generator_phase is not None:
+                        local_generation_phase = generator_phase[phase, t]
+                        local_q_generation_phase = q_generator_phase[phase, t]
+                    else:
+                        local_generation_phase = generator[t] / phase_count
+                        local_q_generation_phase = q_generator[t] / phase_count
                     grid_injection = grid_phase[phase, t] if bus == root else 0.0
                     grid_q_injection = q_grid_phase[phase, t] if bus == root else 0.0
                     storage_charge = (
@@ -1952,6 +2163,8 @@ class StoragePlanningOracle:
                     storage_discharge = (
                         discharge_power[bus, t] / phase_count if bus in candidates else 0.0
                     )
+                    storage_q = q_storage[bus, phase, t] if bus in candidates else 0.0
+                    pv_q = q_pv[bus, phase, t]
                     outgoing_p = quicksum(
                         flow_p[edge, t] for edge in outgoing[bus, phase]
                     )
@@ -1975,7 +2188,11 @@ class StoragePlanningOracle:
                         name=f"active_balance[{sid},{bus},{phase},{t}]",
                     )
                     model.addCons(
-                        local_q_generation_phase + grid_q_injection - load_q
+                        local_q_generation_phase
+                        + grid_q_injection
+                        + pv_q
+                        + storage_q
+                        - load_q
                         == outgoing_q - incoming_q,
                         name=f"reactive_balance[{sid},{bus},{phase},{t}]",
                     )
@@ -2192,8 +2409,7 @@ class StoragePlanningOracle:
                             <= cap * total_incoming_power + excess
                         )
                         carbon_slack_terms.append(
-                            scenario_weight
-                            * annual_blocks
+                            scenario_scale
                             * ccfg.carbon_price_dollars_per_t
                             * excess
                             * dt
@@ -2203,8 +2419,7 @@ class StoragePlanningOracle:
                         model.addCons(nodal_carbon[bus, t] <= cap + slack)
                         if allow_carbon_slack:
                             carbon_slack_terms.append(
-                                scenario_weight
-                                * annual_blocks
+                                scenario_scale
                                 * ccfg.validation_carbon_slack_dollars
                                 * carbon_slack[bus, t]
                             )
@@ -2270,8 +2485,7 @@ class StoragePlanningOracle:
                             name=f"system_carbon_cap[{sid},{t}]",
                         )
                         carbon_slack_terms.append(
-                            scenario_weight
-                            * annual_blocks
+                            scenario_scale
                             * ccfg.carbon_price_dollars_per_t
                             * excess
                             * dt
@@ -2285,8 +2499,7 @@ class StoragePlanningOracle:
                             name=f"system_carbon_cap[{sid},{t}]",
                         )
                         carbon_slack_terms.append(
-                            scenario_weight
-                            * annual_blocks
+                            scenario_scale
                             * ccfg.validation_carbon_slack_dollars
                             * slack
                         )
@@ -2305,8 +2518,10 @@ class StoragePlanningOracle:
                     + ccfg.curtailment_dollars_per_mwh
                     * quicksum(curtail[bus, phase, t] for bus, phase in node_phases)
                     + ccfg.shedding_dollars_per_mwh * shed[t]
+                    + ccfg.feeder_shedding_dollars_per_mwh
+                    * quicksum(feeder_shed[bus, phase, t] for bus, phase in node_phases)
                 )
-                operating_terms.append(scenario_weight * annual_blocks * interval_cost * dt)
+                operating_terms.append(scenario_scale * interval_cost * dt)
 
             if use_system_boundary and pcfg.carbon_cap_scope == "horizon":
                 horizon_carbon = quicksum(horizon_carbon_terms)
@@ -2324,8 +2539,7 @@ class StoragePlanningOracle:
                         name=f"system_carbon_budget[{sid}]",
                     )
                     carbon_slack_terms.append(
-                        scenario_weight
-                        * annual_blocks
+                        scenario_scale
                         * ccfg.carbon_price_dollars_per_t
                         * excess
                     )
@@ -2345,8 +2559,7 @@ class StoragePlanningOracle:
                         name=f"system_carbon_budget[{sid}]",
                     )
                     carbon_slack_terms.append(
-                        scenario_weight
-                        * annual_blocks
+                        scenario_scale
                         * ccfg.validation_carbon_slack_dollars
                         * slack
                     )

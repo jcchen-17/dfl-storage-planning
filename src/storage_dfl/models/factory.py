@@ -69,6 +69,8 @@ def train_generator(
     trajectory_std: np.ndarray | None = None,
     field_masks: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
     writer: Any | None = None,
+    validation_trajectories: np.ndarray | None = None,
+    validation_contexts: np.ndarray | None = None,
 ) -> tuple[GeneratorEpoch, ...]:
     shared = dict(
         trajectories=trajectories,
@@ -83,7 +85,14 @@ def train_generator(
         writer=writer,
     )
     if isinstance(model, ConditionalVAE):
-        return train_cvae(model, **shared)
+        # Only the CVAE records held-out curves; the GAN and diffusion trainers
+        # keep their original signatures until they need the same treatment.
+        return train_cvae(
+            model,
+            validation_trajectories=validation_trajectories,
+            validation_contexts=validation_contexts,
+            **shared,
+        )
     if isinstance(model, ConditionalGAN):
         return train_gan(model, gan_config=config.generator.gan, **shared)
     if isinstance(model, ConditionalDiffusion):

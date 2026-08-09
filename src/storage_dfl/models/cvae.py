@@ -77,6 +77,115 @@ class ConditionalVAE(ConditionalGenerator):
         }
 
 
+COMPONENT_NAMES = (
+    "loss",
+    "reconstruction",
+    "ramp",
+    "kl",
+    "net_load",
+    "net_peak",
+    "price_spread",
+    "carbon_spread",
+)
+
+
+def _components(
+    model: ConditionalVAE,
+    batch_x: torch.Tensor,
+    batch_c: torch.Tensor,
+    layout: TrajectoryLayout,
+    shape: ShapeStatistics,
+    field_weights: Any,
+    config: CVAEConfig,
+    horizon: int,
+    effective_beta: float,
+    device: torch.device,
+    *,
+    sample_latent: bool,
+) -> dict[str, torch.Tensor]:
+    """Every loss component for one batch.
+
+    ``sample_latent`` selects the training estimator (reparameterised draw) or
+    the deterministic posterior mean. The mean is what ``encode``/``decode``
+    produce downstream, so held-out curves measured with it describe the
+    generator as it is actually used rather than one noisy draw from it.
+    """
+
+    mean, log_variance = model.encode(batch_x, batch_c)
+    if sample_latent:
+        latent = mean + torch.exp(0.5 * log_variance) * torch.randn_like(log_variance)
+    else:
+        latent = mean
+    reconstruction = model.decode(latent, batch_c)
+    reconstructed_time = layout.as_time(reconstruction)
+    observed_time = layout.as_time(batch_x)
+    reconstruction_loss = weighted_field_loss(
+        reconstructed_time, observed_time, layout, field_weights
+    )
+    if horizon > 1:
+        ramp_loss = weighted_field_loss(
+            reconstructed_time[:, 1:] - reconstructed_time[:, :-1],
+            observed_time[:, 1:] - observed_time[:, :-1],
+            layout,
+            field_weights,
+        )
+    else:
+        ramp_loss = torch.zeros((), device=device)
+    net_load_loss, net_peak_loss, price_spread_loss = shape.paired_losses(
+        reconstructed_time, observed_time
+    )
+    carbon_spread_loss = shape.carbon_spread_loss(reconstructed_time, observed_time)
+    kl_loss = -0.5 * torch.mean(
+        1.0 + log_variance - mean.square() - log_variance.exp()
+    )
+    loss = (
+        reconstruction_loss
+        + config.ramp_weight * ramp_loss
+        + config.net_load_weight * net_load_loss
+        + config.net_peak_weight * net_peak_loss
+        + config.price_spread_weight * price_spread_loss
+        + config.carbon_spread_weight * carbon_spread_loss
+        + effective_beta * kl_loss
+    )
+    return {
+        "loss": loss,
+        "reconstruction": reconstruction_loss,
+        "ramp": ramp_loss,
+        "kl": kl_loss,
+        "net_load": net_load_loss,
+        "net_peak": net_peak_loss,
+        "price_spread": price_spread_loss,
+        "carbon_spread": carbon_spread_loss,
+    }
+
+
+@torch.no_grad()
+def _evaluate(
+    model: ConditionalVAE,
+    x: torch.Tensor,
+    c: torch.Tensor,
+    batch_size: int,
+    **kwargs: Any,
+) -> dict[str, float]:
+    """Deterministic pass over a whole split, averaged per scenario."""
+
+    was_training = model.training
+    model.eval()
+    totals = {name: 0.0 for name in COMPONENT_NAMES}
+    try:
+        for start in range(0, x.shape[0], batch_size):
+            stop = min(start + batch_size, x.shape[0])
+            values = _components(
+                model, x[start:stop], c[start:stop], sample_latent=False, **kwargs
+            )
+            for name, value in values.items():
+                totals[name] += (stop - start) * float(value.detach().cpu())
+    finally:
+        if was_training:
+            model.train()
+    return {name: value / x.shape[0] for name, value in totals.items()}
+
+
 def train_cvae(
     model: ConditionalVAE,
     trajectories: np.ndarray,
@@ -89,6 +198,8 @@ def train_cvae(
     trajectory_std: np.ndarray | None = None,
     field_masks: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
     writer: Any | None = None,
+    validation_trajectories: np.ndarray | None = None,
+    validation_contexts: np.ndarray | None = None,
 ) -> tuple[GeneratorEpoch, ...]:
     """Pretrain the temporal-spatial manifold before decision-focused learning."""
 
@@ -104,90 +215,82 @@ def train_cvae(
         trajectory_std=trajectory_std,
         field_masks=field_masks,
     )
+    # Fitted on the training split only. Refitting on held-out data would rescale
+    # every summary loss per split and make the two curves incomparable, which is
+    # the one thing these metrics exist to support.
     shape = ShapeStatistics.fit(x, layout)
+
+    if (validation_trajectories is None) != (validation_contexts is None):
+        raise ValueError(
+            "validation_trajectories and validation_contexts must be given together."
+        )
+    validation_x = (
+        torch.as_tensor(validation_trajectories, dtype=torch.float32, device=device)
+        if validation_trajectories is not None
+        else None
+    )
+    validation_c = (
+        torch.as_tensor(validation_contexts, dtype=torch.float32, device=device)
+        if validation_contexts is not None
+        else None
+    )
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
     history: list[GeneratorEpoch] = []
     field_weights = config.field_weights()
 
     for epoch in range(config.epochs):
-        totals = {
-            name: 0.0
-            for name in (
-                "loss",
-                "reconstruction",
-                "ramp",
-                "kl",
-                "net_load",
-                "net_peak",
-                "price_spread",
-                "carbon_spread",
-            )
-        }
+        totals = {name: 0.0 for name in COMPONENT_NAMES}
         effective_beta = config.beta * min(
             1.0,
             (epoch + 1) / max(1, config.kl_warmup_epochs),
         )
+        shared = dict(
+            layout=layout,
+            shape=shape,
+            field_weights=field_weights,
+            config=config,
+            horizon=horizon,
+            effective_beta=effective_beta,
+            device=device,
+        )
         for indices in batched_indices(x.shape[0], config.batch_size, device):
-            batch_x = x[indices]
-            batch_c = c[indices]
             optimizer.zero_grad(set_to_none=True)
-            reconstruction, latent_mean, log_variance = model(batch_x, batch_c)
-            reconstructed_time = layout.as_time(reconstruction)
-            observed_time = layout.as_time(batch_x)
-            reconstruction_loss = weighted_field_loss(
-                reconstructed_time, observed_time, layout, field_weights
+            values = _components(
+                model, x[indices], c[indices], sample_latent=True, **shared
             )
-            if horizon > 1:
-                ramp_loss = weighted_field_loss(
-                    reconstructed_time[:, 1:] - reconstructed_time[:, :-1],
-                    observed_time[:, 1:] - observed_time[:, :-1],
-                    layout,
-                    field_weights,
-                )
-            else:
-                ramp_loss = torch.zeros((), device=device)
-
-            net_load_loss, net_peak_loss, price_spread_loss = shape.paired_losses(
-                reconstructed_time, observed_time
-            )
-            carbon_spread_loss = shape.carbon_spread_loss(
-                reconstructed_time, observed_time
-            )
-            kl_loss = -0.5 * torch.mean(
-                1.0 + log_variance - latent_mean.square() - log_variance.exp()
-            )
-            loss = (
-                reconstruction_loss
-                + config.ramp_weight * ramp_loss
-                + config.net_load_weight * net_load_loss
-                + config.net_peak_weight * net_peak_loss
-                + config.price_spread_weight * price_spread_loss
-                + config.carbon_spread_weight * carbon_spread_loss
-                + effective_beta * kl_loss
-            )
-            loss.backward()
+            values["loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
             optimizer.step()
             weight = int(indices.numel())
-            for name, value in (
-                ("loss", loss),
-                ("reconstruction", reconstruction_loss),
-                ("ramp", ramp_loss),
-                ("kl", kl_loss),
-                ("net_load", net_load_loss),
-                ("net_peak", net_peak_loss),
-                ("price_spread", price_spread_loss),
-                ("carbon_spread", carbon_spread_loss),
-            ):
+            for name, value in values.items():
                 totals[name] += weight * float(value.detach().cpu())
 
         totals = {name: value / x.shape[0] for name, value in totals.items()}
         totals["beta"] = effective_beta
+        # The running averages above are the minimised estimator, measured while
+        # the weights move within the epoch. Held-out comparison needs both sides
+        # measured the same way, so the training split is re-evaluated here under
+        # the same deterministic pass the validation split gets.
+        if validation_x is not None and validation_c is not None:
+            for name, value in _evaluate(
+                model, x, c, config.batch_size, **shared
+            ).items():
+                totals[f"train_eval_{name}"] = value
+            for name, value in _evaluate(
+                model, validation_x, validation_c, config.batch_size, **shared
+            ).items():
+                totals[f"validation_{name}"] = value
         history.append(
             GeneratorEpoch(epoch=epoch, loss=totals["loss"], metrics=dict(totals))
         )
         if epoch == 0 or epoch + 1 == config.epochs or (epoch + 1) % 10 == 0:
+            held_out = (
+                f", val_loss={totals['validation_loss']:.6f}"
+                f", val_carbon_spread={totals['validation_carbon_spread']:.6f}"
+                if "validation_loss" in totals
+                else ""
+            )
             print(
                 f"CVAE epoch {epoch + 1}/{config.epochs}: "
                 f"loss={totals['loss']:.6f}, "
@@ -195,7 +298,7 @@ def train_cvae(
                 f"net_peak={totals['net_peak']:.6f}, "
                 f"price_spread={totals['price_spread']:.6f}, "
                 f"carbon_spread={totals['carbon_spread']:.6f}, "
-                f"beta={effective_beta:.6g}",
+                f"beta={effective_beta:.6g}" + held_out,
                 flush=True,
             )
         if writer is not None:

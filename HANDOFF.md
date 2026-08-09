@@ -5,6 +5,17 @@ was measured on this repository, at the settings the config currently carries.
 Where something is uncertain it says so; do not treat the uncertain parts as
 established.
 
+> **2026-08-09 supersedes much of what follows.** The generative path was
+> measured to have a degenerate action space, the contribution was redefined as
+> selection, and the random-search control was finally run. Read
+> "2026-08-09: measurements that changed the plan" at the end of this file
+> first; where it conflicts with an older section, the newer section wins.
+>
+> **Start with "OPEN AND UNRESOLVED: the planning tolerance has been choosing
+> the design".** It is the live problem and it puts a question mark over every
+> result in this file that reports a plan with no storage. If you are picking
+> this up to work on one thing, that is the thing.
+
 ## What the project is
 
 A data centre on an IEEE13 unbalanced distribution microgrid decides where and
@@ -329,4 +340,313 @@ learning-rate and exploration changes cannot fix a signal that is below the
 resolution of the thing being optimised.
 
 Dataset-v2 details, rebuild commands and new empirical results are recorded in
-`DATASET_V2.md`.
+`DATASET_V2.md`. (That file, `outputs/dataset_v2_baselines/exhaustive_k1_v2.json`
+and `search_controls_v2.json` are **no longer present in this working copy**;
+sections above that cite their numbers cannot currently be reproduced here.)
+
+## 2026-08-09: measurements that changed the plan
+
+### The action space was degenerate, and that is why there was no signal
+
+The CAPEX sweep showed uniform designs and 0.3-0.6% cost differences at every
+level. The cause is upstream of the solver and the loss: **every latent the
+policy samples decodes to essentially the same scenario.**
+
+    channel          generated at sigma=0.10      real validation pool
+    peak net load    1.349 - 1.429 MW             0.793 - 3.466 MW
+    carbon swing     0.067 - 0.078                0.034 - 0.162
+    price spread     52.2 - 56.6                  0.0 - 69.7
+
+Generated sd as a fraction of real sd, sampling the full prior: 0.30 with the
+context held at one scenario (what REINFORCE actually does, since the policy
+optimises only the latent), 0.46 with contexts drawn from the pool. So the
+planner receives one scenario, decision loss is flat in the action, and the
+REINFORCE gradient is exactly zero. `_rank_advantages` collapsing samples into
+one tie group is a symptom, not the cause.
+
+A six-variant capacity sweep settled that this is not a tuning problem:
+
+    variant                       peak_net  carbon_sw   val_carbon_spread
+    latent8-hidden256-beta0.01        0.55       0.65               0.895
+    latent16-hidden256-beta0.01       0.46       0.53               0.948   <- current
+    latent32-hidden256-beta0.01       0.38       0.43               1.099
+    latent16-hidden512-beta0.01       0.55       0.58               0.984
+    latent16-hidden256-beta0.001      0.38       0.49               0.979
+    latent32-hidden512-beta0.001      0.42       0.42               1.079
+
+Coverage falls as latent grows and as beta falls, opposite to the intuition that
+more latent capacity helps; validation reconstruction moves the other way, so
+**tuning this generator on reconstruction error systematically degrades
+coverage.** The ceiling is 0.55, and none of it is reachable by the policy,
+which is stuck near 0.30. There is no exploration std that both works and
+covers: sigma 0.18-0.20 already left the exact COPF with no incumbent on 3 of 4
+samples.
+
+### The generator's carbon channel does not generalise at all
+
+Held-out `carbon_spread` loss is `1 - R^2`. Training reaches 0.011 (R^2 0.99);
+validation never drops below 0.948 at any epoch out of 300, i.e. **R^2 ~ 0 for
+the whole run.** A loss of 1.0 is exactly what a constant predictor scores, and
+that is what the decoder does: real swing 0.061 decodes to 0.081, real 0.121
+decodes to 0.085. Early stopping cannot help a curve that was never better.
+Other channels do generalise (net_peak 1.805 -> 0.240, price_spread 1.606 ->
+0.242), so this is specific to carbon, whose blocks are permuted within split
+and season and are therefore independent of everything else by construction.
+
+`train_generator_stage` now records `train_eval_*` and `validation_*` curves
+each epoch under one deterministic posterior-mean pass, plus
+`validation_minima` in `cvae_result.json`. That is how the above was measured.
+
+### Contribution redefined: selection, with REINFORCE retained
+
+The claim is **decision-focused selection of K support scenarios from observed
+data**, not generation of novel scenarios. This is a change of action space, not
+of method: the policy becomes a Plackett-Luce distribution over the N observed
+scenarios (sample K without replacement) instead of a Gaussian over the latent.
+Reward, score-function estimator, rank advantages, baseline momentum, finalists
+and early stopping are all unchanged; only `dfl/support.py`'s
+`DirectSupportPolicy` is replaced. Prefer a scoring network over scenario
+features to N free logits, so the policy generalises to a new pool and "what
+kind of scenario matters" becomes reportable.
+
+### The random-search control, finally run
+
+`scripts/random_subset_control.py`, K=3, 24 draws from the 182 validation
+scenarios, each planned then scored on a fixed 4-scenario test set against one
+shared no-storage reference (1,611,042.07). Storage values:
+
+    distribution        [-1612, 0)  6   quarter of draws chose not to build
+                        [10k, 20k)  3
+                        [20k, 25k)  3
+                        [25k, 30k) 10
+                        [30k, 32k)  2
+
+    expected best of B draws (bootstrap)      B=1  18,961   p10 0
+                                              B=2  24,979
+                                              B=4  28,200
+                                              B=8  29,604
+                                              B=16 30,491
+                                              B=24 30,874
+    kmeans K=3                                     24,793
+    farthest K=3                                   27,964
+
+**Random search beats both heuristics by B=4.** The printed best-of-budget curve
+in that script walks the realised draw order, so its B=1 entry is one lucky
+draw; the bootstrap above is the honest bar.
+
+The ceiling is low and flat: six times the budget (B=4 to B=24) buys 9.5%, and
+no draw after the 16th improved on 31,527. Good subsets form a wide plateau. A
+learned selector at B=8 must beat 29,604 against an observed maximum of 31,527,
+so **the contestable band is about 1,900 dollars while fixed-design evaluation
+uncertainty is 13,739-27,240.** The signal is an order of magnitude below the
+measurement.
+
+The defensible framing is single-run behaviour, not best-of-B: one draw has
+expected value 18,961 with p10 = 0 and a 25% chance of not building at all, so a
+selector that lands reliably in 25k-30k is a real and practically meaningful
+result. Report both curves; a reviewer will ask for best-of-B.
+
+### Solver resolution, measured properly
+
+Free planning plateaus near 1.9-2%: 120s to 900s moved it only 2.06% -> 1.92%
+(+/- $27,894). Fixed-design evaluation is bimodal. Stratified on peak net load
+across the test pool, 3 of 5 hit the 900s limit at 0.9-1.5% while 2 solved to
+optimality in 11s, and **difficulty does not track peak net load** (1.31 hard,
+1.65 easy, 1.79 hard, 1.98 easy, 2.15 hard). The cause of the split is
+unidentified and worth finding. No-storage references all solve to optimality
+within 92s, so the reference term is clean.
+
+An earlier probe that took `test_pool.scenarios[:2]` sampled two windows at the
+98th percentile of peak net load and reported their tail difficulty (+/- $79,206)
+as if it were typical. Stratify.
+
+### Deadband is still on the wrong denominator
+
+`decision_deadband_relative: 0.01` is applied to the raw decision loss (~1.7M),
+giving a deadband near 17,000 against a 5,000-10,000 signal, in `trainer.py`
+`_rank_advantages`, early stopping and finalist selection, and in
+`scenario_bo.py`. Finalists therefore all tie and the winner is chosen by the
+"prefer the smaller design" fallback rather than by the objective. Rebase it on
+storage value against the shared no-storage reference -- **but only after the
+action space is fixed**, or it will turn solver noise into gradient, which is
+what the deadband exists to prevent.
+
+### Things that were tried and did not work
+
+- Rebalancing generator loss weights. `carbon_spread_weight` is already 0.50,
+  tied with `price_spread_weight` for the highest in the config, and the term is
+  minimised successfully on training data. Raising it further only trades other
+  channels away.
+- "Encode stochastic fields only" (item 5 of the older plan). The packed vector
+  is 121 values per timestep and the deterministic ones (workload, pue, price)
+  are 3 of them: **2.5%**. The other 97.5% is phase-resolved P/Q/PV, which is
+  stochastic. There is nothing to remove.
+
+### Data-side facts worth knowing before changing the dataset
+
+- Splits are **entirely by year**: train 2016, validation 2017, test 2018, 182
+  windows each. Carbon blocks are permuted within split, so no carbon trajectory
+  is shared across splits. Any re-split mixes years and drops the temporal
+  holdout, which is a research decision, not a mechanical one.
+- `grid_available` is **1.0 in all 546 scenarios**. Outages are an entire
+  degenerate channel; activating them would create genuinely different optimal
+  designs.
+- `workload_arrival` has **one distinct profile** across all 546 scenarios;
+  `grid_price_per_mwh` has **7**, with only two distinct spreads (0 or 69.726),
+  and is not determined by start weekday. Load, PV and carbon are the only
+  genuinely varying fields (CV 0.25, 0.34, 0.16).
+- Windows are non-overlapping and year-aligned, so 8760/48 = 182 per year is a
+  hard cap at this horizon and stride.
+
+### Outages were added, measured, and did not help
+
+`scripts/add_outage_scenarios.py` builds
+`data/processed/ieee13_smartds_dfl_v2_outage/` with a contiguous outage in 25%
+of windows, importance weights undoing the oversampling, and per-scenario
+`annual_occurrences`. `configs/dataset_v2_outage.yaml` runs it. Three model
+changes were needed before an outage scenario would even solve, and all three
+are real fixes worth keeping:
+
+1. **PV and storage exchanged no reactive power at all.** The reactive balance
+   had only the substation and the backup generator. `inverter_power_factor`
+   (0.90, i.e. |Q| <= 0.484 of rating, per IEEE 1547-2018) now gives both a
+   per-phase reactive variable, bounded by installed rating rather than
+   instantaneous output so an inverter can support voltage at night.
+2. **The backup generator split its output equally across phases.** On this
+   unbalanced feeder that wasted the light phase's share; the IIS showed the
+   conflict confined to phases B and C, at one hour, across nearly every bus.
+   `per_phase_backup_generator` dispatches it per phase under the same totals.
+3. **`grid_available` bounded only active import.** The substation kept
+   supplying reactive power and regulating voltage straight through an outage.
+   Now zeroed per phase.
+
+`feeder_shedding_dollars_per_mwh` and `feeder_curtailable_fraction` add capped
+feeder load shedding at a VOLL, which was expected to be the fix and was not:
+with equal-phase generation the model needed 80% curtailable to solve, and with
+the three fixes above it solves at 40%.
+
+The result, at 1% evaluation gap:
+
+    9 h outages, annual_occurrences absent (a window = 182.5 a year)
+      outage supports  16.06 MWh mean, all three pinned to max_duration_hours
+      normal supports   2.35 MWh mean
+
+    2 h outages, annual_occurrences = 1.30 for outage windows
+      outage supports   0.00 MWh -- all three chose not to build
+      normal supports   1.13 MWh
+
+**Outages do not create decision diversity; correctly weighted they remove it.**
+A 0.71% event times any defensible cost cannot amortise the annualised
+investment: one 2-hour outage is ~2.6 outage-hours a year, worth about $13,000
+of avoided VOLL against $12,150 a year for the 1 MWh that would cover it. The
+first table is what the model says when a rare window is priced as a common one,
+and it is wrong by roughly 140x, not a usable alternative.
+
+Making a rare event drive the design requires a reliability *constraint*, not an
+expected cost. That is a fourth theme on top of layered carbon accounting and
+decision-focused selection, so it was not pursued.
+
+### The real obstacle is a flat optimum, not a thin dataset
+
+Measured on the 24 K=3 control draws: **20 distinct designs**, spanning 0.271 to
+1.566 MW and 0.898 to 7.246 MWh -- 5.8x and 8.1x -- across five different bus
+choices, with five draws declining to build at all. The pool is not short of
+diversity, and neither is the design space. But the best five out-of-sample
+values were 31,527 / 30,149 / 29,137 / 28,805 / 28,293: **a 10% band**.
+
+Many very different designs reach nearly the same out-of-sample value. That is
+what a smooth objective does near an interior optimum -- the first-order
+condition makes it flat by construction -- so no dataset change fixes it, and
+the outage attempt above is a worked example of one that did not.
+
+Two claims follow, one supportable and one not:
+
+- **Not supportable**: "decision-focused selection finds the best support set."
+  Best and fifth-best differ by 10%, and evaluation uncertainty at 1% of a 2.1M
+  objective is about $21,000 -- the same order as the thing being ranked.
+- **Supportable**: "decision-focused selection is reliable in a single run."
+  One random draw has expected value 18,961, sd 11,979, p10 = 0, and a 25%
+  chance of not building. A selector landing consistently in 28,000+ is a 50%
+  improvement over drawing once, well outside the measurement error.
+
+`scripts/carbon_cap_sharpness.py` tests whether a binding carbon cap sharpens
+the top, using one set of subsets scored at several caps (paired, so the
+comparison is not reading subset noise) and a separate no-storage reference per
+cap. If `best - 5th` stays near 10% as the cap tightens, a learned selector has
+no contest to win and the single-run framing is the only one left. The cap is
+the right lever to try first because it is already part of the story: layered
+accounting only beat blended once the cap bit (regret 465 vs 1,047 at 0.22, 295
+vs 2,135 at 0.18), and the pool's mean carbon intensity is 0.283 against the
+current cap of 0.28, so today the constraint barely binds.
+
+### OPEN AND UNRESOLVED: the planning tolerance has been choosing the design
+
+This is the live problem. Everything above that reports a plan with no storage
+is suspect until it is rechecked.
+
+Storage is worth about 30,000 against a 1.55M planning objective: **1.86%**. The
+planning solves ran at a 2% relative gap. A relative gap of 2% means the solver
+stops once the incumbent is provably within 31,000 of the bound, and "install
+nothing" is already within 31,000 of optimal. So it stops without looking.
+
+From the 24-draw K=3 control, sorted by value, the five zero-value rows:
+
+    value   plan gap   status      sec   installed
+        0      1.08%   optimal      34   []
+        0      1.60%   optimal      37   []
+        0      1.83%   optimal      41   []
+        0      2.08%   timelimit   610   []
+        0      2.78%   timelimit   638   []
+
+Three returned **`optimal` in 34-41 seconds**, against a median of 911 seconds
+for the 19 draws that did install something. That is not a solver deciding
+storage is uneconomic; it is a solver meeting its tolerance before it starts.
+The carbon scan at a 3% planning gap then returned zero on 7 of 7 draws, which
+is the same effect one step worse.
+
+**What this invalidates.** Any "the optimum is not to build" claim made at a 2-3%
+planning gap, which includes: the bimodal shape of the K=3 control and the
+"avoid the bad quarter" framing built on it; part of the outage conclusion (that
+one has an independent reason in `annual_occurrences`, but the no-build rows
+should still be rechecked); and the 130% CAPEX row in the original sweep.
+
+**What does not fix it.** Two things were tried and reasoned through:
+
+1. *Longer solves.* Planning moved 2.06% -> 1.92% between 120 s and 900 s.
+   Measured here, and consistent with the maintainer's experience that this
+   model's gap does not come down with time.
+2. *Adding an absolute tolerance while leaving the relative one loose.*
+   `solver_absolute_gap_dollars` now exists and maps to Gurobi `MIPGapAbs`,
+   HiGHS `mip_abs_gap`, SCIP `limits/absgap`. But all three terminate when
+   **either** criterion is met, so a 2% relative gap still stops the solve at
+   31,000 and the absolute setting does nothing.
+
+**What should fix it, untested at the time of writing.** Set the relative gap to
+**zero** so the relative criterion can never be met, leaving `MIPGapAbs` as the
+only stopping rule. The point is not to prove optimality -- this model will not
+prove anything tight in the available time -- but to stop the solver quitting at
+40 seconds. Under a tolerance it cannot meet it keeps searching to the time
+limit and keeps improving the incumbent, which is the quantity the comparison
+actually uses.
+
+Note the distinction that a single gap number hides: **an unproven bound is not
+the same as a bad incumbent.** The comparison needs good incumbents, not proofs.
+What it cannot tolerate is a solver that stops before finding one.
+
+Cost: every solve now runs to the time limit, so the cheap 40-second no-build
+rows become full-length solves. Budget accordingly.
+
+A second, harder option if that is not enough: subtract a valid design-independent
+lower bound from the objective so the relative tolerance applies to the part that
+the decision can actually move. The argmin is unchanged and the absolute gap is
+unchanged, but the same relative tolerance becomes far tighter. The offset must
+stay strictly below the true optimum or the reduced objective approaches zero and
+the relative gap misbehaves.
+
+### Do not do this
+
+Uniformly rescaling the data cannot change generation quality. `ScenarioCodec`
+normalises by mean and standard deviation, so a global factor cancels, and the
+coverage ratio that matters is itself scale-free. Rescaling only moves the
+economics relative to fixed storage costs, which is what the CAPEX sweep already
+varies.

@@ -28,6 +28,12 @@ class PlanningResult:
     scenario_names: tuple[str, ...]
     solve_time_seconds: float
     relative_gap: float
+    # Best proven bound. Kept alongside the gap because enumerating the storage
+    # site turns one solve into several, and the enumerated problem's global
+    # bound is min_i best_bound_i -- the winning subproblem's own gap describes
+    # only that subproblem. Defaulted so results written before the field
+    # existed still load.
+    best_bound: float = float("-inf")
 
     @property
     def feasible(self) -> bool:

@@ -63,7 +63,77 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--horizon", type=int, default=48)
     parser.add_argument("--seed", type=int, default=20260808)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--outage-window-fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Share of windows in each split given a grid outage. 0.0 reproduces "
+            "the original all-available dataset. This is deliberately far above "
+            "the physical rate so a 182-window split contains enough outages to "
+            "select among; --outage-annual-frequency records the real rate and "
+            "sample_weight carries the importance correction."
+        ),
+    )
+    parser.add_argument(
+        "--outage-annual-frequency",
+        type=float,
+        default=1.3,
+        help=(
+            "True sustained interruptions per year (US distribution SAIFI is "
+            "about 1.3). Only used to compute the importance weights, never to "
+            "decide how many windows get an outage."
+        ),
+    )
+    parser.add_argument("--outage-min-hours", type=int, default=2)
+    parser.add_argument("--outage-max-hours", type=int, default=10)
     return parser.parse_args()
+
+
+def outage_assignment(
+    window_splits: np.ndarray,
+    horizon: int,
+    fraction: float,
+    min_hours: int,
+    max_hours: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Give a share of each split one contiguous outage.
+
+    Contiguous rather than per-hour Bernoulli: a battery sized for scattered
+    single missing hours is a different machine from one that has to carry a
+    sustained interruption, and only the second is what a data centre buys.
+    Drawn per split so a split's outage set does not depend on how many windows
+    the other splits happen to have.
+    """
+
+    count = len(window_splits)
+    available = np.ones((count, horizon), dtype=np.float32)
+    duration = np.zeros(count, dtype=np.int16)
+    if fraction <= 0.0:
+        return available, duration
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError("--outage-window-fraction must lie in (0, 1].")
+    if not 1 <= min_hours <= max_hours <= horizon:
+        raise ValueError(
+            "Outage duration must satisfy 1 <= min <= max <= horizon, got "
+            f"{min_hours}..{max_hours} against horizon {horizon}."
+        )
+
+    for split in np.unique(window_splits):
+        indices = np.flatnonzero(window_splits == split)
+        rng = np.random.default_rng(seed + SPLIT_SEEDS.get(str(split), 4701))
+        chosen = rng.choice(
+            indices, size=int(round(fraction * indices.size)), replace=False
+        )
+        for index in chosen:
+            hours = int(rng.integers(min_hours, max_hours + 1))
+            # The outage may run past the window end; truncating it there would
+            # bias durations short exactly for the late starts.
+            start = int(rng.integers(0, horizon))
+            available[index, start : start + hours] = 0.0
+            duration[index] = int(horizon - start if start + hours > horizon else hours)
+    return available, duration
 
 
 def _sha256(path: Path) -> str:
@@ -261,10 +331,36 @@ def main() -> None:
         [f"{int(years[start])}_block_{index:03d}" for index, start in enumerate(starts)]
     )
     start_timestamps = timestamps[starts].astype("datetime64[h]").astype(str)
+    grid_available, outage_hours = outage_assignment(
+        window_splits,
+        args.horizon,
+        args.outage_window_fraction,
+        args.outage_min_hours,
+        args.outage_max_hours,
+        args.seed,
+    )
+    has_outage = outage_hours > 0
+
     split_weights = np.asarray(
         [1.0 / np.count_nonzero(window_splits == split) for split in window_splits],
         dtype=np.float32,
     )
+    # Outages are simulated far more often than they occur so that a split
+    # contains enough of them to choose among. Left uncorrected, any weighted
+    # average over the pool would then price a rare event as a common one, so
+    # the oversampling is undone here and the two classes keep their true shares.
+    true_probability = float(
+        1.0 - np.exp(-args.outage_annual_frequency * args.horizon / 8760.0)
+    )
+    if has_outage.any():
+        for split in np.unique(window_splits):
+            in_split = window_splits == split
+            outage = in_split & has_outage
+            normal = in_split & ~has_outage
+            simulated = outage.sum() / in_split.sum()
+            split_weights[outage] *= true_probability / simulated
+            if normal.any():
+                split_weights[normal] *= (1.0 - true_probability) / (1.0 - simulated)
 
     payload = {
         "dataset_version": np.asarray("2.0"),
@@ -289,14 +385,17 @@ def main() -> None:
         "pue": pue,
         "grid_price_per_mwh": price,
         "grid_carbon_t_per_mwh": carbon,
-        "grid_available": np.ones((len(starts), args.horizon), dtype=np.float32),
+        "grid_available": grid_available,
+        "outage_hours": outage_hours,
         "buses": np.asarray(BUSES),
         "phases": np.asarray(PHASES),
         "deterministic_fields": np.asarray(
-            ["workload_arrival", "pue", "grid_price_per_mwh", "grid_available"]
+            ["workload_arrival", "pue", "grid_price_per_mwh"]
+            + ([] if has_outage.any() else ["grid_available"])
         ),
         "stochastic_fields": np.asarray(
             ["active_load_phase_mw", "reactive_load_phase_mvar", "pv_available_phase_mw", "grid_carbon_t_per_mwh"]
+            + (["grid_available"] if has_outage.any() else [])
         ),
     }
 
@@ -336,10 +435,29 @@ def main() -> None:
         "reactive_power_method": "active power times static IEEE13 phase Q/P ratio",
         "carbon_blocks_reassigned": int(carbon_changed.sum()),
         "carbon_blocks_unchanged_by_chance": int((~carbon_changed).sum()),
+        "outages": {
+            "window_fraction_simulated": args.outage_window_fraction,
+            "windows_with_outage": int(has_outage.sum()),
+            "duration_hours_range": [args.outage_min_hours, args.outage_max_hours],
+            "mean_duration_hours": (
+                float(outage_hours[has_outage].mean()) if has_outage.any() else 0.0
+            ),
+            "assumed_annual_frequency": args.outage_annual_frequency,
+            "true_window_probability": true_probability,
+            "importance_weighted": bool(has_outage.any()),
+        },
         "known_limitations": [
             "The workload is a deterministic proxy pending a longer data-center power trace.",
             "Carbon and Smart-DS trajectories are scenario components, not jointly observed measurements.",
-            "Grid availability is one; outage scenarios require a separately weighted stress-test set.",
+            (
+                "Outages are simulated at a rate far above the assumed SAIFI and "
+                "corrected through sample_weight; nothing in the training or "
+                "evaluation pipeline reads sample_weight yet, so any weighted "
+                "result must apply it explicitly."
+                if has_outage.any()
+                else "Grid availability is one; outage scenarios require a separately weighted stress-test set."
+            ),
+            "Outage timing is independent of load, PV and carbon, so storm-driven correlation between demand and interruption is not represented.",
             "Customer tariff and carbon series describe different economic/accounting quantities and are not jointly observed.",
         ],
     }
@@ -352,6 +470,14 @@ def main() -> None:
     print(f"scenarios: {len(starts)} {split_counts}")
     print(f"horizon/stride/overlap: {args.horizon}/{args.horizon}/0 h")
     print(f"carbon blocks reassigned: {int(carbon_changed.sum())}/{len(carbon_changed)}")
+    if has_outage.any():
+        print(
+            f"outages: {int(has_outage.sum())}/{len(has_outage)} windows, "
+            f"{outage_hours[has_outage].min()}-{outage_hours[has_outage].max()} h "
+            f"(mean {outage_hours[has_outage].mean():.1f}); "
+            f"true window probability {true_probability:.4f}, "
+            f"importance weight {split_weights[has_outage][0] / split_weights[~has_outage][0]:.4f}x"
+        )
     print(f"manifest: {manifest_path}")
 
 

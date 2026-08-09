@@ -1,22 +1,15 @@
-# Exploratory dataset-v2 CVAE + REINFORCE run under the proposed hourly
+﻿# Exploratory dataset-v2 CVAE + REINFORCE run under the proposed hourly
 # vintage-layered carbon accounting. This has its own output directory and does
 # not overwrite the exhaustive or carbon-accounting baselines.
 seed: 20260808
 
 data:
-  dataset_path: data/processed/ieee13_smartds_dfl_v2/dfl_scenarios_v2_48h.npz
+  dataset_path: data/processed/ieee13_smartds_dfl_v2_outage/dfl_scenarios_v2_48h.npz
   train_split: train
   validation_split: validation
   test_split: test
   horizon: 48
   delta_t_hours: 1.0
-  # OpenEI OPT-V is a known calendar tariff, not a stochastic market-price
-  # trajectory. The codec restores a legal tariff template after every decode.
-  deterministic_price: true
-  # Enhanced-TOU sensitivity: widen the published OPT-V peak/valley deviations
-  # by 25% around its shoulder rate while retaining the legal calendar schedule.
-  tariff_spread_scale: 1.25
-  tariff_reference_price_per_mwh: 53.248
 
 cvae:
   # Sixteen dimensions balance reconstruction capacity against the continuous
@@ -35,12 +28,11 @@ cvae:
   # Workload is restored from the fixed v2 template by ScenarioCodec v5.
   workload_weight: 0.0
   pue_weight: 0.05
-  # Price is restored deterministically from the calendar-conditioned tariff.
-  price_weight: 0.0
+  price_weight: 0.20
   carbon_weight: 0.30
   net_load_weight: 0.20
   net_peak_weight: 0.20
-  price_spread_weight: 0.0
+  price_spread_weight: 0.50
   carbon_spread_weight: 0.50
 
 generator:
@@ -49,9 +41,10 @@ generator:
 dfl:
   method: reinforce
   num_support_scenarios: 1
-  # Give the policy enough updates to move beyond its initial CVAE latent while
-  # retaining four candidates per epoch for a rank-based REINFORCE signal.
-  epochs: 15
+  # First exact-COPF diagnostic run. Four candidates fill one four-worker wave;
+  # validation is deliberately small because every additional scenario adds a
+  # complete 48 h nonconvex feeder model.
+  epochs: 8
   policy_samples_per_epoch: 4
   # Each candidate is dispatched on four validation scenarios as four separate
   # exact models, then costs are weighted. This gives distributional DFL reward
@@ -60,10 +53,11 @@ dfl:
   final_validation_size: 4
   learning_rate: 0.01
   baseline_momentum: 0.75
-  # Exact site enumeration now supplies a forced-build warm start, so exploration
-  # can be wider than in the earlier joint-siting run without losing incumbents.
-  initial_exploration_std: 0.15
-  minimum_exploration_std: 0.05
+  # Exact COPF failed to find any incumbent for 3/4 samples at sigma=0.18-0.20.
+  # Stay closer to the CVAE posterior manifold so the planning oracle receives
+  # physically familiar scenarios while retaining enough variation for ranking.
+  initial_exploration_std: 0.10
+  minimum_exploration_std: 0.03
   exploration_decay: 0.95
   diversity_margin: 0.8
   diversity_weight: 0.0
@@ -71,15 +65,15 @@ dfl:
   latent_prior_weight: 0.001
   support_init_rule: kmeans
   training_relative_gap: 0.02
-  # Measured storage value on the fixed validation set is only about 0.34% of
-  # total system cost. A 5% reward tolerance and 1% decision deadband therefore
-  # erased the very signal DFL is meant to learn.
-  validation_relative_gap: 0.04
+  # Four-scenario exact reward evaluation contains a tail case that plateaus at
+  # 3.4-4.0% after 180 s. Planning remains at 2%; only fixed-design reward
+  # dispatches use a 5% epsilon-optimal certificate.
+  validation_relative_gap: 0.05
   training_allow_carbon_slack: true
-  decision_deadband_relative: 0.001
+  decision_deadband_relative: 0.01
   reinforce_finalists: 4
-  early_stopping_patience: 6
-  early_stopping_min_epochs: 10
+  early_stopping_patience: 4
+  early_stopping_min_epochs: 6
   evaluation_selection_rule: kmeans
   device: auto
 
@@ -95,13 +89,13 @@ data_center:
 
 planning:
   max_storage_sites: 1
-  # Exact decomposition: no storage plus one forced-build subproblem per bus.
-  # The 2/30/60/120 s sweep found 60 s was the first budget with an incumbent
-  # for all 6 tested subsets x 5 candidate buses.
-  enumerate_storage_sites: true
-  enumeration_site_time_limit_seconds: 60
-  enumeration_absolute_gap_dollars: 100
-  initial_soc: 0.20
+  # At 0.20 only (0.20 - min_soc) = 0.1 of the pack is available when an outage
+  # starts, which left every 9-hour outage scenario with no feasible plan. 0.50
+  # is a working reserve rather than a full pack, so storage still has to be
+  # sized and scheduled for the outage instead of arriving with it solved. The
+  # cyclic constraint requires the energy to be put back before the horizon
+  # ends, so the starting charge is not free.
+  initial_soc: 0.50
   initial_carbon_intensity: 0.28
   min_soc: 0.10
   max_soc: 0.90
@@ -117,6 +111,15 @@ planning:
   grid_limit_mw: 5.0
   backup_generator_mw: 2.0
   backup_generator_mvar: 1.6
+  # A three-phase machine on an unbalanced feeder. Splitting its output equally
+  # wasted the lightly loaded phase's share and made every multi-hour outage
+  # infeasible on phases B and C.
+  per_phase_backup_generator: true
+  # PV and storage inverters hold at least 0.9 displacement power factor, so
+  # each may exchange up to 0.484 times its rating in reactive power. Without
+  # this the substation and the backup generator are the only reactive sources,
+  # and an outage cannot hold the 0.95 pu floor at any battery size.
+  inverter_power_factor: 0.90
   carbon_intensity_max: 0.75
   dc_carbon_cap: 0.28
   other_bus_carbon_cap: 1.10
@@ -159,9 +162,16 @@ costs:
   curtailment_dollars_per_mwh: 4.0
   shedding_dollars_per_mwh: 10000.0
   validation_carbon_slack_dollars: 300000.0
-  # Single physical-tonne penalty on emissions above the hourly 0.28 tCO2/MWh
-  # performance benchmark. This is an intentionally high compliance/shadow
-  # price sensitivity, not represented as an observed allowance-market price.
-  carbon_price_dollars_per_t: 200.0
+  carbon_price_dollars_per_t: 185.0
+  # Value of lost load on the non-data-centre feeder. Mid-range of published
+  # distribution VOLL for mixed residential/commercial load. Two orders of
+  # magnitude above every dispatch cost in this list, so the solver empties
+  # storage, PV and the backup generator before it sheds a single MWh.
+  feeder_shedding_dollars_per_mwh: 5000.0
+  # Only this share of each bus-phase load may be dropped; the rest is critical.
+  # Without a cap an outage could be made cheap by de-energising the feeder,
+  # and storage would never be worth building.
+  feeder_curtailable_fraction: 0.40
 
-output_dir: outputs/dataset_v2_dfl_hourly_layered_tou125_carbon200
+output_dir: outputs/dataset_v2_outage
+

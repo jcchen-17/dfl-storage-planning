@@ -40,6 +40,7 @@ from storage_dfl.planning import (
     PlanningResult,
     StorageDesign,
     StoragePlanningOracle,
+    make_planning_oracle,
 )
 
 
@@ -168,6 +169,29 @@ def _experiment_data(
         split=split,
         horizon=config.data.horizon,
     )
+    if config.data.tariff_spread_scale <= 0.0:
+        raise ValueError("data.tariff_spread_scale must be positive.")
+    if abs(config.data.tariff_spread_scale - 1.0) > 1.0e-12:
+        reference = float(config.data.tariff_reference_price_per_mwh)
+        if reference <= 0.0:
+            raise ValueError(
+                "A positive tariff_reference_price_per_mwh is required when "
+                "tariff_spread_scale differs from one."
+            )
+        pool = ScenarioPool(
+            tuple(
+                replace(
+                    scenario,
+                    grid_price_per_mwh=np.maximum(
+                        0.0,
+                        reference
+                        + config.data.tariff_spread_scale
+                        * (scenario.grid_price_per_mwh - reference),
+                    ),
+                )
+                for scenario in pool.scenarios
+            )
+        )
     first = pool.scenarios[0]
     if first.horizon != config.data.horizon:
         raise ValueError(
@@ -199,6 +223,31 @@ def _load_codec(paths: ArtifactPaths, feeder: Feeder) -> ScenarioCodec:
             f"Normalization file not found: {paths.normalization}. Train the CVAE first."
         )
     return ScenarioCodec.from_normalization_dict(_read_json(paths.normalization), feeder)
+
+
+def _require_current_codec(config: ExperimentConfig, codec: ScenarioCodec) -> None:
+    """Reject stale normalization when deterministic tariff restoration is required."""
+
+    if config.data.deterministic_price and (
+        codec.tariff_contexts is None or codec.tariff_templates is None
+    ):
+        raise RuntimeError(
+            "This configuration treats price as a deterministic tariff, but the "
+            "normalization file predates tariff-template restoration. Retrain the "
+            "CVAE before running DFL or evaluation."
+        )
+    if config.data.deterministic_price and (
+        abs(codec.tariff_spread_scale - config.data.tariff_spread_scale) > 1.0e-12
+        or abs(
+            codec.tariff_reference_price_per_mwh
+            - config.data.tariff_reference_price_per_mwh
+        )
+        > 1.0e-9
+    ):
+        raise RuntimeError(
+            "The saved tariff templates were built for a different price-spread "
+            "case. Retrain the CVAE before running DFL or evaluation."
+        )
 
 
 def _apply_generator_override(
@@ -241,8 +290,21 @@ def train_generator_stage(
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     feeder, observed_pool = _experiment_data(config, config.data.train_split)
-    codec = ScenarioCodec.fit(observed_pool, feeder)
+    codec = ScenarioCodec.fit(
+        observed_pool,
+        feeder,
+        deterministic_price=config.data.deterministic_price,
+        tariff_spread_scale=config.data.tariff_spread_scale,
+        tariff_reference_price_per_mwh=(
+            config.data.tariff_reference_price_per_mwh
+        ),
+    )
     trajectories, contexts = codec.encode_pool(observed_pool)
+    # Encoded with the codec fitted on the training split, never one refitted
+    # here: the held-out curve has to describe the generator downstream stages
+    # load, and they all share this one normalization.
+    _, validation_pool = _experiment_data(config, config.data.validation_split)
+    validation_trajectories, validation_contexts = codec.encode_pool(validation_pool)
     device = resolve_device(config.dfl.device)
     model = build_generator(config, codec.trajectory_dim, codec.context_dim)
     writer = _summary_writer(paths.tensorboard / kind, tensorboard, config)
@@ -257,6 +319,8 @@ def train_generator_stage(
             trajectory_std=codec.trajectory_std,
             field_masks=codec.field_masks(),
             writer=writer,
+            validation_trajectories=validation_trajectories,
+            validation_contexts=validation_contexts,
         )
     finally:
         if writer is not None:
@@ -277,6 +341,8 @@ def train_generator_stage(
         "dataset": str(config.data.dataset_path),
         "split": config.data.train_split,
         "scenarios": len(observed_pool.scenarios),
+        "validation_split": config.data.validation_split,
+        "validation_scenarios": len(validation_pool.scenarios),
         "trajectory_dim": codec.trajectory_dim,
         "latent_dim": model.latent_dim,
         "epochs": len(history),
@@ -285,6 +351,21 @@ def train_generator_stage(
         "final_metrics": asdict(history[-1]),
         "checkpoint": str(checkpoint_path),
     }
+    # Training runs a fixed number of epochs, so where each held-out curve turned
+    # is reported rather than acted on. A best epoch well before the last one is
+    # what overfitting looks like here, and it is the evidence an early-stopping
+    # point would be chosen from.
+    validation_minima: dict[str, dict[str, float]] = {}
+    for name in sorted(history[-1].metrics):
+        if not name.startswith("validation_"):
+            continue
+        best = min(history, key=lambda record, key=name: record.metrics[key])
+        validation_minima[name] = {
+            "epoch": best.epoch,
+            "value": best.metrics[name],
+            "final": history[-1].metrics[name],
+        }
+    payload["validation_minima"] = validation_minima
     _write_json(paths.generator_json_for("result", kind), payload)
     return payload
 
@@ -350,6 +431,7 @@ def train_dfl_stage(
     torch.manual_seed(config.seed)
     feeder, observed_pool = _experiment_data(config, config.data.validation_split)
     codec = _load_codec(paths, feeder)
+    _require_current_codec(config, codec)
     device = resolve_device(config.dfl.device)
     cvae = load_generator(paths, config.generator.kind, device)
     if cvae.latent_dim > codec.trajectory_dim // 2:
@@ -363,7 +445,10 @@ def train_dfl_stage(
     # evaluate_stage builds its own oracle from config.planning, so whatever is
     # set here never reaches a reported objective.
     training_planning = config.planning
-    if config.dfl.training_relative_gap > 0.0:
+    if (
+        config.dfl.training_relative_gap > 0.0
+        and not config.planning.enumerate_storage_sites
+    ):
         training_planning = replace(
             config.planning,
             solver_relative_gap=config.dfl.training_relative_gap,
@@ -374,7 +459,14 @@ def train_dfl_stage(
             f"{config.planning.solver_relative_gap:g}",
             flush=True,
         )
-    oracle = StoragePlanningOracle(
+    if training_planning.enumerate_storage_sites:
+        print(
+            "free planning uses exact site enumeration: none + "
+            f"{len(feeder.storage_candidates)} forced-site parts, "
+            f"{training_planning.enumeration_site_time_limit_seconds:g}s per site",
+            flush=True,
+        )
+    oracle = make_planning_oracle(
         feeder, training_planning, config.costs, config.data, config.data_center
     )
     writer = _summary_writer(paths.tensorboard / f"dfl_{tag}", tensorboard, config)
@@ -481,7 +573,21 @@ def train_dfl_stage(
         "seed": config.seed,
         # Which tolerance the loop actually ran at. Two runs at different values
         # searched different landscapes even with everything else identical.
-        "training_relative_gap": float(training_planning.solver_relative_gap),
+        "training_relative_gap": float(
+            0.0
+            if training_planning.enumerate_storage_sites
+            else training_planning.solver_relative_gap
+        ),
+        "planning_oracle": (
+            "exact_site_enumeration"
+            if training_planning.enumerate_storage_sites
+            else "joint_siting"
+        ),
+        "enumeration_site_time_limit_seconds": (
+            float(training_planning.enumeration_site_time_limit_seconds)
+            if training_planning.enumerate_storage_sites
+            else None
+        ),
         "training_validation_relative_gap": float(
             config.dfl.validation_relative_gap
             if config.dfl.validation_relative_gap > 0.0
@@ -715,6 +821,7 @@ def evaluate_stage(
     paths = ArtifactPaths(config.output_dir)
     feeder, observed_pool = _experiment_data(config, config.data.test_split)
     codec = _load_codec(paths, feeder)
+    _require_current_codec(config, codec)
     evaluation_scenarios, evaluation_weights, evaluation_names = select_scenarios(
         config.dfl.evaluation_selection_rule,
         observed_pool,
@@ -752,7 +859,7 @@ def evaluate_stage(
         name_prefix="dfl_evaluation",
     )
 
-    oracle = StoragePlanningOracle(
+    oracle = make_planning_oracle(
         feeder, config.planning, config.costs, config.data, config.data_center
     )
     planning = oracle.solve(
@@ -867,6 +974,16 @@ def evaluate_stage(
         "test_split": config.data.test_split,
         "test_scenarios_evaluated": len(evaluation_pool.scenarios),
         "evaluation_relative_gap": config.planning.solver_relative_gap,
+        "planning_oracle": (
+            "exact_site_enumeration"
+            if config.planning.enumerate_storage_sites
+            else "joint_siting"
+        ),
+        "enumeration_site_time_limit_seconds": (
+            float(config.planning.enumeration_site_time_limit_seconds)
+            if config.planning.enumerate_storage_sites
+            else None
+        ),
         "evaluation_selection_rule": config.dfl.evaluation_selection_rule,
         "evaluation_scenario_names": list(evaluation_names),
         "evaluation_scenario_weights": list(evaluation_weights),

@@ -46,6 +46,7 @@ _STATUS_NAMES = {
 _OPTION_NAMES = {
     "limits/time": "time_limit",
     "limits/gap": "mip_rel_gap",
+    "limits/absgap": "mip_abs_gap",
     "parallel/maxnthreads": "threads",
 }
 
@@ -223,6 +224,10 @@ class HighsModel:
     def getGap(self) -> float:
         gap = getattr(self._model.getInfo(), "mip_gap", None)
         return float(gap) if gap is not None else 0.0
+
+    def getDualbound(self) -> float:
+        bound = getattr(self._model.getInfo(), "mip_dual_bound", None)
+        return float(bound) if bound is not None else self.getObjVal()
 
     def getSolvingTime(self) -> float:
         return float(self._model.getRunTime())

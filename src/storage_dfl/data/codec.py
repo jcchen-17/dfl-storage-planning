@@ -28,6 +28,14 @@ class ScenarioCodec:
     # curve is exactly flat. Preserve that rule instead of allowing a latent
     # policy to manufacture arbitrage value in a deterministic channel.
     full_weekend_price_template: np.ndarray | None = None
+    # Calendar-conditioned customer tariffs are known inputs, not uncertain
+    # trajectories.  Store observed context/template pairs so every decoded
+    # scenario is projected back onto a tariff that actually exists in the
+    # planning dataset.  None preserves stochastic-price datasets.
+    tariff_contexts: np.ndarray | None = None
+    tariff_templates: np.ndarray | None = None
+    tariff_spread_scale: float = 1.0
+    tariff_reference_price_per_mwh: float = 0.0
 
     @staticmethod
     def _farthest_point_indices(features: np.ndarray, count: int) -> np.ndarray:
@@ -51,7 +59,15 @@ class ScenarioCodec:
         return np.asarray(selected, dtype=np.int64)
 
     @classmethod
-    def fit(cls, pool: ScenarioPool, feeder: Feeder) -> "ScenarioCodec":
+    def fit(
+        cls,
+        pool: ScenarioPool,
+        feeder: Feeder,
+        *,
+        deterministic_price: bool = False,
+        tariff_spread_scale: float = 1.0,
+        tariff_reference_price_per_mwh: float = 0.0,
+    ) -> "ScenarioCodec":
         raw = np.stack([cls._pack(scenario) for scenario in pool.scenarios])
         contexts = np.stack([scenario.context for scenario in pool.scenarios])
         context_mean = contexts.mean(axis=0)
@@ -89,12 +105,26 @@ class ScenarioCodec:
             context_anchors=normalized_contexts[anchor_indices].astype(np.float32),
             workload_template=workload_template,
             full_weekend_price_template=full_weekend_price_template,
+            tariff_contexts=(
+                contexts.astype(np.float32) if deterministic_price else None
+            ),
+            tariff_templates=(
+                np.stack(
+                    [scenario.grid_price_per_mwh for scenario in pool.scenarios]
+                ).astype(np.float32)
+                if deterministic_price
+                else None
+            ),
+            tariff_spread_scale=float(tariff_spread_scale),
+            tariff_reference_price_per_mwh=float(
+                tariff_reference_price_per_mwh
+            ),
         )
 
     @classmethod
     def from_normalization_dict(cls, payload: dict, feeder: Feeder) -> "ScenarioCodec":
         layout_version = int(payload.get("layout_version", 0))
-        if layout_version not in {2, 3, 4, 5}:
+        if layout_version not in {2, 3, 4, 5, 6}:
             raise ValueError(
                 "Normalization layout is not a supported phase-resolved format; retrain the CVAE."
             )
@@ -118,6 +148,20 @@ class ScenarioCodec:
                 np.asarray(payload["full_weekend_price_template"], dtype=np.float32)
                 if payload.get("full_weekend_price_template") is not None
                 else None
+            ),
+            tariff_contexts=(
+                np.asarray(payload["tariff_contexts"], dtype=np.float32)
+                if payload.get("tariff_contexts") is not None
+                else None
+            ),
+            tariff_templates=(
+                np.asarray(payload["tariff_templates"], dtype=np.float32)
+                if payload.get("tariff_templates") is not None
+                else None
+            ),
+            tariff_spread_scale=float(payload.get("tariff_spread_scale", 1.0)),
+            tariff_reference_price_per_mwh=float(
+                payload.get("tariff_reference_price_per_mwh", 0.0)
             ),
         )
 
@@ -192,7 +236,24 @@ class ScenarioCodec:
         )
         if self.workload_template is not None:
             workload = self.workload_template
-        if (
+        if self.tariff_contexts is not None and self.tariff_templates is not None:
+            if len(self.tariff_contexts) != len(self.tariff_templates):
+                raise ValueError("Tariff contexts and templates have different lengths.")
+            # Day-of-year sine/cosine and weekend fraction define the tariff.
+            # Temperature is deliberately excluded: it is correlated with season
+            # but does not determine the published customer rate schedule.
+            dimensions = min(3, context.size, self.tariff_contexts.shape[1])
+            scale = np.maximum(self.context_std[:dimensions], 1.0e-4)
+            distance = np.sum(
+                (
+                    (self.tariff_contexts[:, :dimensions] - context[:dimensions])
+                    / scale
+                )
+                ** 2,
+                axis=1,
+            )
+            price = self.tariff_templates[int(np.argmin(distance))]
+        elif (
             self.full_weekend_price_template is not None
             and context.size >= 3
             and context[2] >= 1.0 - 1.0e-5
@@ -276,7 +337,7 @@ class ScenarioCodec:
 
     def normalization_dict(self) -> dict[str, object]:
         return {
-            "layout_version": 5,
+            "layout_version": 6,
             "layout": "time-major:[P_bus_phase,Q_bus_phase,PV_bus_phase,workload,pue,price,carbon]",
             "horizon": self.horizon,
             "trajectory_mean": self.trajectory_mean.tolist(),
@@ -293,5 +354,19 @@ class ScenarioCodec:
                 self.full_weekend_price_template.tolist()
                 if self.full_weekend_price_template is not None
                 else None
+            ),
+            "tariff_contexts": (
+                self.tariff_contexts.tolist()
+                if self.tariff_contexts is not None
+                else None
+            ),
+            "tariff_templates": (
+                self.tariff_templates.tolist()
+                if self.tariff_templates is not None
+                else None
+            ),
+            "tariff_spread_scale": self.tariff_spread_scale,
+            "tariff_reference_price_per_mwh": (
+                self.tariff_reference_price_per_mwh
             ),
         }

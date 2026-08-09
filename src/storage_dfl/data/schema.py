@@ -17,6 +17,14 @@ class Scenario:
     grid_price_per_mwh: np.ndarray
     grid_carbon_t_per_mwh: np.ndarray
     grid_available: np.ndarray
+    # How many times a year this window is taken to occur. None means the
+    # planning model's default, 8760 / horizon, i.e. "the year looks like this".
+    # That default is right for load, price and carbon, which really do repeat
+    # every window, and badly wrong for a rare event: a support scenario holding
+    # one outage was priced as 182.5 outages a year against a true rate near
+    # 1.3, and the planner answered by building a battery eight times the size
+    # anything else asked for, pinned to max_duration_hours.
+    annual_occurrences: float | None = None
 
     @property
     def horizon(self) -> int:
@@ -53,6 +61,8 @@ class Scenario:
                 raise ValueError(f"{self.name}: time-series shape mismatch")
         if np.any(self.active_load_mw < 0) or np.any(self.pv_available_mw < 0):
             raise ValueError(f"{self.name}: power profiles must be nonnegative")
+        if self.annual_occurrences is not None and self.annual_occurrences <= 0.0:
+            raise ValueError(f"{self.name}: annual_occurrences must be positive")
 
 
 @dataclass(frozen=True)
