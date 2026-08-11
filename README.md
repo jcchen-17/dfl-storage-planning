@@ -2,11 +2,15 @@
 
 The main experiment reduces the microgrid to one point of common coupling:
 
-- data-centre demand, fixed PV, a backup diesel generator and one battery;
+- a calibrated 10 MW-class synthetic data-center demand, a three-year bus-675
+  solar profile rescaled to 5 MW, a 3.5 MW backup generator and one battery;
 - 48-hour historical scenarios with importance-weighted 1--4 hour grid outages;
 - 16-dimensional CVAE with deterministic workload and full-weekend price restoration;
 - direct CVAE fine-tuning with exact fixed-design recourse feedback;
-- an ODECE-inspired feasibility surrogate for load, PV and carbon errors;
+- paper-inspired IPL/OPL losses balancing feasibility and preservation of the
+  perfect-information design for load, PV and carbon constraint errors;
+- disjoint train/validation/test use, fixed-validation best-checkpoint restore,
+  independent reconstruction/decision batches and logged gradient balancing;
 - exact MILP decision regret as an evaluation-only metric;
 - hourly data-centre carbon cap using exact source-resolved storage vintages;
 - Gurobi planning and out-of-sample evaluation.
@@ -41,7 +45,7 @@ python scripts/evaluate.py
 ```
 
 The active artifacts are written under
-`outputs/dataset_v2_dfl_single_pcc_outage_hourly_cap/`.
+`outputs/dataset_v2_dfl_single_pcc_dc10mw_pv5mw_hourly_cap/`.
 
 Planning JSON now includes an optional `carbon_ledger` with annualized PCC
 imports, diesel/PV supply, storage charge/discharge, source emissions and carbon
@@ -51,7 +55,7 @@ consumption layers directly auditable.
 ## Retained Python package
 
 `src/storage_dfl/` contains the runtime library used by the commands above:
-scenario aggregation and normalization, the single-PCC planning model, CVAE
+scenario PCC reduction and normalization, the single-PCC planning model, CVAE
 components, the recourse-aware trainer, solver backends, and stage wiring.
 Legacy REINFORCE, scenario-BO, GAN, diffusion and IEEE-13 planning experiment
 files have been removed. The exact feasibility loss

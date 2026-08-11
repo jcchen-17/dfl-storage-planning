@@ -5,27 +5,37 @@ The active configuration uses
 The structural audit passes all checks, including split weights summing to one,
 binary availability, non-overlapping windows and no exact cross-split leakage.
 
-For the 182 training windows, after aggregation to the data-centre PCC:
+PCC demand is synthesized from the Azure workload proxy and temperature-derived
+PUE, calibrated as a 10 MW-class continuously operating data center. Only the
+three-year PV shape from original bus 675 is retained and its 0.65 MW nameplate
+trajectory is rescaled to a 5 MW installation:
 
 | quantity | value |
 |---|---:|
-| mean facility load | 0.965 MW |
-| 95th-percentile facility load | 1.193 MW |
-| maximum facility load | 1.302 MW |
-| mean available PV | 0.282 MW |
-| maximum available PV | 1.467 MW |
+| time resolution | 1 hour |
+| all-split minimum facility load | 7.463 MW |
+| all-split mean facility load | 8.477 MW |
+| all-split 95th-percentile facility load | 9.416 MW |
+| all-split maximum facility load | 10.224 MW |
+| all-split load coefficient of variation | 0.070 |
+| mean available PV | 0.821 MW |
+| 95th-percentile available PV | 3.348 MW |
+| maximum available PV | 4.533 MW |
 | mean grid carbon intensity | 0.270 tCO2/MWh |
 | 95th-percentile grid carbon intensity | 0.360 tCO2/MWh |
 | outage windows / simulated training windows | 46 / 182 |
 | outage hours | 106 |
 | physical outage probability from `sample_weight` | about 0.71% |
 
-The previous active data file had no outages. In addition, the previous 2 MW
-diesel rating exceeded the observed 1.302 MW peak demand, so even an augmented
-grid outage could not produce insufficient supply. The active case therefore
-uses a 0.75 MW partial-firm diesel rating. With no storage this creates positive
-deficit in 65 outage intervals in the training split, while normal grid-connected
-hours remain supply adequate.
+The PCC reduction does not sum feeder demand or PV. A 3.5 MW partial-firm
+diesel is paired with the calibrated facility. Across all 546
+train/validation/test scenarios, the worst four-hour residual after local PV and
+diesel is 20.325 MWh with a 5.817 MW peak. This supports battery bounds of
+7.5 MW / 60 MWh when initial SOC is 50%, minimum SOC is 10%, and discharge
+efficiency is 95%.
+
+Grid-connected shedding is disabled. Carbon infeasibility is represented by the
+explicit carbon-excess variable rather than economically curtailing served load.
 
 Outages are oversampled only to make small feasibility batches observe them.
 Planning and evaluation use the dataset's importance-corrected `sample_weight`.
@@ -34,4 +44,4 @@ generated scenario; gradients remain limited to generated load, PV and grid
 carbon intensity.
 
 The reproducible audit artifact is written to
-`outputs/dataset_v2_dfl_single_pcc_outage_hourly_cap/data_audit.json`.
+`outputs/dataset_v2_dfl_single_pcc_dc10mw_pv5mw_hourly_cap/data_audit.json`.

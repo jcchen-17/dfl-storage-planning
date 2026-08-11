@@ -11,7 +11,10 @@ from storage_dfl.data import (
     make_toy_scenarios,
 )
 from storage_dfl.dfl.decision_loss import RecourseFeasibilityLoss
-from storage_dfl.dfl.recourse_trainer import train_recourse_feasibility_cvae
+from storage_dfl.dfl.recourse_trainer import (
+    _validation_checkpoint_score,
+    train_recourse_feasibility_cvae,
+)
 from storage_dfl.models import ConditionalVAE
 from storage_dfl.network import single_pcc_microgrid
 from storage_dfl.planning import (
@@ -115,6 +118,94 @@ def test_directional_feasibility_gradient_signs() -> None:
     assert torch.all(generated.active_load_mw.grad < 0.0)
     assert torch.all(generated.pv_available_mw.grad > 0.0)
     assert torch.all(generated.grid_carbon_t_per_mwh.grad < 0.0)
+
+
+def test_horizon_carbon_excess_uses_average_intensity() -> None:
+    truth = _physical(load=1.0, pv=0.2, carbon=0.6)
+    result = _result(carbon=(0.2,), served=2.0)
+    generated = TorchPhysicalTrajectories(
+        active_load_mw=torch.full((1, 2, 1, 3), 1.0 / 3.0),
+        pv_available_mw=torch.full((1, 2, 1, 3), 0.2 / 3.0),
+        grid_carbon_t_per_mwh=torch.full((1, 2), 0.2, requires_grad=True),
+    )
+    output = RecourseFeasibilityLoss(
+        load_weight=0.0,
+        pv_weight=0.0,
+        carbon_weight=1.0,
+        carbon_cap_t_per_mwh=0.28,
+    )(generated, truth, result, [result])
+    output.loss.backward()
+    assert output.carbon_underestimation > 0.0
+    assert torch.all(generated.grid_carbon_t_per_mwh.grad < 0.0)
+
+
+def test_soft_constraint_checkpoint_selection_prioritizes_regret() -> None:
+    economically_better = _validation_checkpoint_score(0.20, 0.02, 0.01, 0.28)
+    physically_better = _validation_checkpoint_score(0.30, 0.00, 0.00, 0.28)
+    assert economically_better < physically_better
+
+
+def test_carbon_first_checkpoint_selection_respects_reliability_guardrail() -> None:
+    reliable_low_carbon = _validation_checkpoint_score(
+        0.30, 0.00009, 0.001, 0.28,
+        selection="carbon_first", shedding_tolerance=0.0001,
+    )
+    unreliable_zero_carbon = _validation_checkpoint_score(
+        0.10, 0.00011, 0.0, 0.28,
+        selection="carbon_first", shedding_tolerance=0.0001,
+    )
+    assert reliable_low_carbon < unreliable_zero_carbon
+
+
+def test_outage_hours_do_not_create_grid_carbon_gradient() -> None:
+    truth = _physical(load=1.0, pv=0.0, carbon=0.7)
+    result = _result(carbon=(0.2,), served=2.0)
+    generated = TorchPhysicalTrajectories(
+        active_load_mw=torch.full((1, 2, 1, 3), 1.0 / 3.0),
+        pv_available_mw=torch.zeros((1, 2, 1, 3)),
+        grid_carbon_t_per_mwh=torch.full((1, 2), 0.2, requires_grad=True),
+    )
+    output = RecourseFeasibilityLoss(
+        load_weight=0.0, pv_weight=0.0, carbon_weight=1.0,
+        carbon_cap_t_per_mwh=0.28,
+    )(
+        generated, truth, result, [result],
+        grid_connected_mask=torch.zeros((1, 2)),
+    )
+    output.loss.backward()
+    assert output.carbon_underestimation == 0.0
+    assert torch.all(generated.grid_carbon_t_per_mwh.grad == 0.0)
+
+
+def test_opl_pushes_overly_strict_predictions_toward_truth() -> None:
+    truth = _physical(load=1.0, pv=0.4, carbon=0.3)
+    preservation = _result(shed=(0.2, 0.2), carbon=(0.1, 0.1))
+    generated = TorchPhysicalTrajectories(
+        active_load_mw=torch.full((1, 2, 1, 3), 1.5 / 3.0, requires_grad=True),
+        pv_available_mw=torch.full((1, 2, 1, 3), 0.1 / 3.0, requires_grad=True),
+        grid_carbon_t_per_mwh=torch.full((1, 2), 0.7, requires_grad=True),
+    )
+    output = RecourseFeasibilityLoss(
+        load_weight=1.0,
+        pv_weight=1.0,
+        carbon_weight=1.0,
+        carbon_cap_t_per_mwh=0.28,
+        infeasibility_aversion_alpha=0.0,
+        margin=0.05,
+    )(
+        generated,
+        truth,
+        _result(),
+        [_result()],
+        preservation,
+        [preservation],
+    )
+    output.loss.backward()
+    # Gradient descent loosens predicted constraints: lower load/carbon and
+    # higher PV, preserving the known-good real design.
+    assert torch.all(generated.active_load_mw.grad > 0.0)
+    assert torch.all(generated.pv_available_mw.grad < 0.0)
+    assert torch.all(generated.grid_carbon_t_per_mwh.grad > 0.0)
 
 
 def test_feasibility_surrogate_reaches_cvae_decoder() -> None:
@@ -224,6 +315,17 @@ def test_lambda_zero_is_noop_and_final_models_are_true_milps(monkeypatch) -> Non
         for name, kind in variable_types.items()
     )
     artifacts.model.freeProb()
+
+
+def test_main_config_stabilizes_decision_feedback() -> None:
+    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+
+    assert config.dfl.fixed_decision_anchors
+    assert config.dfl.decision_batch_size == config.dfl.num_support_scenarios
+    assert config.dfl.validation_interval == 1
+    assert np.isclose(config.dfl.dfl_statistical_weight, 0.20)
+    assert np.isclose(config.dfl.gradient_balance_ratio, 0.10)
+    assert np.isclose(config.dfl.gradient_balance_max_scale, 1000.0)
 
 
 def test_recourse_fixes_only_design_and_reoptimizes_operations(monkeypatch) -> None:

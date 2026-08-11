@@ -8,6 +8,18 @@ def main() -> None:
     parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered.yaml")
     parser.add_argument("--no-tensorboard", action="store_true")
     parser.add_argument(
+        "--carbon-formulation",
+        choices=("layered_pcc", "average_pcc"),
+        default=None,
+        help="override only the PCC carbon-accounting formulation",
+    )
+    parser.add_argument(
+        "--carbon-cap-scope",
+        choices=("hourly", "horizon"),
+        default=None,
+        help="override only the temporal scope of the carbon constraint",
+    )
+    parser.add_argument(
         "--method",
         choices=("recourse_feasibility",),
         default=None,
@@ -26,6 +38,8 @@ def main() -> None:
         tensorboard=not args.no_tensorboard,
         method_override=args.method,
         battery_capex_scale=args.capex_scale,
+        carbon_formulation_override=args.carbon_formulation,
+        carbon_cap_scope_override=args.carbon_cap_scope,
     )
     print(f"generator: {result['generator']}")
     print(f"method: {result['method']}")

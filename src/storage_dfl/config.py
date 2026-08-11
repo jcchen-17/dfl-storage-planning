@@ -23,6 +23,12 @@ class DataConfig:
     # declared tariff case without altering the raw dataset.
     tariff_spread_scale: float = 1.0
     tariff_reference_price_per_mwh: float = 0.0
+    # Original feeder bus supplying the co-located PV trace when reducing to a
+    # single PCC. PCC demand itself is the calibrated data-center facility model.
+    pcc_source_bus: str = "675"
+    # Installed PV capacity behind the reduced PCC. The source-bus trajectory is
+    # normalized by its original nameplate rating and rescaled to this value.
+    pcc_pv_capacity_mw: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -76,6 +82,10 @@ class DFLConfig:
     final_validation_size: int
     device: str
     method: str = "recourse_feasibility"
+    # False starts a fresh generator inside train_dfl instead of loading the
+    # separately pretrained checkpoint. Normalization is still loaded from the
+    # fitted codec because it describes the data, not learned model weights.
+    initialize_from_pretrained: bool = True
     training_relative_gap: float = 0.0
     training_allow_carbon_slack: bool = False
     # How fixed validation and reported test subsets approximate the held-out
@@ -84,6 +94,11 @@ class DFLConfig:
     # with cluster-mass weights and is the statistically meaningful default for
     # dataset v2 configurations.
     evaluation_selection_rule: str = "farthest"
+    # Checkpoint objective. "economic" minimizes exact validation regret;
+    # "carbon_first" first enforces the shedding tolerance, then minimizes
+    # carbon excess and finally uses regret as a tie-breaker.
+    checkpoint_selection: str = "economic"
+    checkpoint_shedding_tolerance: float = 1.0e-4
     # Direct CVAE fine-tuning with recourse-aware feasibility feedback.  A zero
     # lambda is an exact no-op after generator pretraining, which defines the
     # CVAE-only ablation without extra optimization epochs.
@@ -96,7 +111,29 @@ class DFLConfig:
     dfl_start_epoch: int = 0
     dfl_eval_interval: int = 1
     decision_batch_size: int = 4
+    # Reuse the same stratified real-scenario anchors and latent draws at every
+    # DFL epoch.  This removes Monte-Carlo target drift from the already noisy
+    # detached-solver feedback while the reconstruction minibatch stays random.
+    fixed_decision_anchors: bool = True
     use_solution_cache: bool = True
+    # Paper-inspired Odece trade-off.  IPL discourages optimistic constraint
+    # predictions whose design fails under truth; OPL discourages predictions
+    # so conservative that the true optimal design is excluded.
+    infeasibility_aversion_alpha: float = 0.5
+    feasibility_margin: float = 0.05
+    # Keep the reconstruction batch statistically meaningful while the much
+    # more expensive MILP decision batch remains small.  Zero reuses
+    # cvae.batch_size.
+    reconstruction_batch_size: int = 0
+    # Once decision feedback starts, retain a smaller statistical objective as
+    # a distributional regularizer instead of letting it dominate the decoder.
+    dfl_statistical_weight: float = 0.20
+    validation_interval: int = 1
+    # Dynamically rescale the DFL term so its decoder-gradient norm is this
+    # fraction of the statistical gradient norm.  Zero disables balancing.
+    gradient_balance_ratio: float = 0.20
+    gradient_balance_min_scale: float = 1.0
+    gradient_balance_max_scale: float = 1000.0
 
 
 @dataclass(frozen=True)
@@ -110,14 +147,14 @@ class DataCenterConfig:
     rescales the data center without touching the dataset or any trained
     generator; only the planning results depend on them.
 
-    The defaults give a 0.24-0.48 MW facility -- an edge data center.  Raising
-    them past roughly 0.96 MW peak requires uprating the 671-692-675 branch,
-    which is what an interconnection study for a larger facility would conclude.
+    The defaults give a roughly 10 MW-peak facility with a high, continuous
+    base load. They are calibrated case-study parameters, not metered facility
+    data.
     """
 
-    non_it_mw: float = 0.03
-    it_base_mw: float = 0.12
-    it_workload_mw: float = 0.30
+    non_it_mw: float = 0.75
+    it_base_mw: float = 5.0
+    it_workload_mw: float = 3.75
     # Maximum number of intervals by which unfinished arrivals may be deferred.
     # Zero fixes processed work to the arrival trace and is useful for measuring
     # how much workload shifting substitutes for storage.
@@ -280,6 +317,15 @@ class PlanningConfig:
     # in configuration makes the PCC carbon ledger auditable and avoids the
     # historical hard-coded 0.72 tCO2/MWh constant.
     diesel_carbon_t_per_mwh: float = 0.72
+    # Optional carbon-intensity allowance for intervals when the grid is down.
+    # Zero keeps dc_carbon_cap in every interval. A positive value gives outage
+    # energy its own budget while normal grid-connected energy retains the
+    # ordinary cap. This separates emergency reliability from routine carbon
+    # compliance without removing outage emissions from the ledger.
+    outage_carbon_cap: float = 0.0
+    # PCC shedding represents involuntary outage curtailment, not an economic
+    # substitute for paying the grid-connected carbon-excess penalty.
+    allow_grid_connected_shedding: bool = False
 
 
 @dataclass(frozen=True)

@@ -112,6 +112,12 @@ def aggregate_fixed_design_results(
                 if entry is not None
                 for row in entry.hourly_carbon_excess_t_per_hour
             ),
+            grid_carbon_exposure_mw=tuple(
+                matrix
+                for entry in entries
+                if entry is not None
+                for matrix in entry.grid_carbon_exposure_mw
+            ),
         )
 
     bounded = all(_bounded(result, accepted_relative_gap) for result in results)

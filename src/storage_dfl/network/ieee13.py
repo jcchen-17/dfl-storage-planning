@@ -204,7 +204,10 @@ def ieee13_balanced_microgrid() -> Feeder:
     return ieee13_unbalanced_microgrid()
 
 
-def single_pcc_microgrid() -> Feeder:
+def single_pcc_microgrid(
+    pv_capacity_mw: float = 5.0,
+    reference_load_mw: float = 10.5,
+) -> Feeder:
     """Return the single-bus, behind-the-meter data-centre microgrid.
 
     The three phase slots are retained in the scenario schema so the existing
@@ -212,6 +215,10 @@ def single_pcc_microgrid() -> Feeder:
     slots and does not model reactive power or phase imbalance.
     """
 
+    if pv_capacity_mw <= 0.0:
+        raise ValueError("pv_capacity_mw must be positive.")
+    if reference_load_mw <= 0.0:
+        raise ValueError("reference_load_mw must be positive.")
     phase_mask = np.ones((1, 3), dtype=bool)
     feeder = Feeder(
         buses=("PCC",),
@@ -219,13 +226,11 @@ def single_pcc_microgrid() -> Feeder:
         root="PCC",
         lines=(),
         phase_mask=phase_mask,
-        # These arrays define codec masks and physically reasonable clipping
-        # bounds. Actual data-centre demand is built from workload and PUE when
-        # historical scenarios are aggregated in stages._experiment_data.
-        base_active_load_mw=np.full((1, 3), 1.0 / 3.0, dtype=float),
+        # These are codec masks and clipping references. Actual facility demand
+        # is synthesized from workload/PUE in stages._experiment_data.
+        base_active_load_mw=np.full((1, 3), reference_load_mw / 3.0, dtype=float),
         base_reactive_load_mvar=np.zeros((1, 3), dtype=float),
-        # Aggregate nameplate PV on the original IEEE-13 case: 0.25+0.65+0.75.
-        pv_capacity_mw=np.full((1, 3), 1.65 / 3.0, dtype=float),
+        pv_capacity_mw=np.full((1, 3), pv_capacity_mw / 3.0, dtype=float),
         storage_candidates=("PCC",),
         data_center_bus="PCC",
         generator_bus="PCC",

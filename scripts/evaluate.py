@@ -7,6 +7,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate trained supports in storage planning.")
     parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered.yaml")
     parser.add_argument(
+        "--carbon-formulation",
+        choices=("layered_pcc", "average_pcc"),
+        default=None,
+        help="override only the PCC carbon-accounting formulation",
+    )
+    parser.add_argument(
+        "--carbon-cap-scope",
+        choices=("hourly", "horizon"),
+        default=None,
+        help="override only the temporal scope of the carbon constraint",
+    )
+    parser.add_argument(
+        "--evaluation-carbon-formulation",
+        choices=("layered_pcc", "average_pcc"),
+        default=None,
+        help=(
+            "re-evaluate the saved design under a common carbon ledger; "
+            "checkpoint selection still uses --carbon-formulation"
+        ),
+    )
+    parser.add_argument(
         "--method",
         choices=("recourse_feasibility",),
         default=None,
@@ -41,9 +62,16 @@ def main() -> None:
         method_override=args.method,
         memory_limit_mb=args.memory_limit,
         scenarios=args.scenarios,
+        carbon_formulation_override=args.carbon_formulation,
+        carbon_cap_scope_override=args.carbon_cap_scope,
+        evaluation_carbon_formulation_override=(
+            args.evaluation_carbon_formulation
+        ),
     )
     print(f"generator: {result['generator']}")
     print(f"method: {result['method']}")
+    print(f"trained carbon formulation: {result['trained_carbon_formulation']}")
+    print(f"evaluation carbon formulation: {result['evaluation_carbon_formulation']}")
     planning = result["planning"]
     validation = result["out_of_sample_validation"]
     evaluated_design = validation["design"]

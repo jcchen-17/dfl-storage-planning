@@ -1,12 +1,21 @@
-# Recourse-aware feasibility-focused CVAE training
+# Feasibility-aware DFL for PCC recourse planning
 
 ## Scope
 
-This first implementation stage fine-tunes the existing CVAE with feasibility
-feedback from the exact single-PCC planning MILP. It does not differentiate
+This implementation fine-tunes the existing CVAE with feasibility and
+optimality-preservation feedback from the exact single-PCC planning MILP. It
+adapts the IPL/OPL construction in *Feasibility-Aware Decision-Focused Learning
+for Predicting Parameters in the Constraints* to a two-stage planning problem.
+It does not differentiate
 through Gurobi/SCIP, relax integer variables, use `cvxpylayers`, or propagate a
 regret gradient. Obsolete REINFORCE/scenario-BO and alternative-generator paths
 have been removed from the active codebase.
+
+The adaptation is deliberate: the paper studies a single predicted parameter
+vector and a single decision, whereas this project predicts a reduced scenario
+set and then fixes only the first-stage storage design. Consequently, "solution"
+below means the storage design with optimal recourse, not a reused 48-hour
+dispatch schedule.
 
 ## Two-stage interpretation
 
@@ -65,7 +74,7 @@ divide each class mass among the selected representatives of that class.
 `torch.clamp` has zero derivative outside the declared physical bounds. No
 straight-through or fake solver gradient is used.
 
-## Feasibility surrogate
+## IPL: infeasibility-inducing predictions
 
 For scenario \(s\) and hour \(t\), let
 
@@ -97,17 +106,40 @@ L_{carbon}=\frac1{ST}\sum_{s,t}
   \frac{[c_{st}-\widehat c_{st}]_+}{\max(\bar c,10^{-6})}.
 \]
 
-The implemented feasibility loss is
+These terms form the infeasibility penalty (IPL). They are active only where
+the generated-scenario design causes real fixed-design recourse shedding or
+carbon excess. A softplus margin replaces the original hard directional hinge.
+
+## OPL: preserving a known-good design
+
+IPL alone can make generated constraints arbitrarily conservative. For the same
+real decision bag, the perfect-information MILP supplies a known-good storage
+design. That design is fixed and re-dispatched against the generated scenarios.
+If the generated constraints then require shedding or carbon slack, the reverse
+directional terms penalize overestimated demand/carbon and underestimated PV.
+This is the two-stage recourse analogue of evaluating
+\(x^*(\rho)\) under \(\widehat\rho\) in the paper; operational recourse is
+reoptimized because only first-stage design transfers between scenarios.
+
+The implemented Odece-style decision loss is
 
 \[
-L_{feas}=w_L L_{load}+w_{PV}L_{PV}+w_C L_{carbon}.
+L_{decision}=\alpha L_{IPL}+(1-\alpha)L_{OPL},
 \]
 
-The total fine-tuning objective is
+where `infeasibility_aversion_alpha` is the paper's feasibility-versus-
+optimality trade-off. The total fine-tuning objective is
 
 \[
-L_{total}=L_{CVAE}+\lambda_{DFL}L_{feas}.
+L_{total}=L_{CVAE}+\lambda_{effective}L_{decision}.
 \]
+
+`lambda_dfl` is the base cross-objective scale. When
+`gradient_balance_ratio > 0`, a detached per-epoch multiplier makes the DFL
+decoder-gradient norm a configured fraction of the statistical gradient norm,
+within explicit minimum and maximum bounds. The effective value and both raw
+gradient norms are recorded in history; this directly addresses a decision
+gradient that is several orders of magnitude smaller than the CVAE gradient.
 
 The severity values \(z^L,z^C\) and all MILP decisions are stop-gradient
 constants. The gradient paths are therefore exactly:
@@ -142,8 +174,21 @@ and the reported metric is
 R=\frac{C_{DFL}-C^*}{|C^*|+10^{-6}}.
 \]
 
-`R` is detached and never appears in `L_total` in this implementation stage.
+`R` is detached and never appears in `L_total`.
 Reference plans are cached by full scenario contents, weights and slack mode.
+
+## Data protocol and checkpointing
+
+- CVAE pretraining and all DFL gradient updates use `data.train_split`.
+- A deterministic bag from `data.validation_split`, fixed support anchors and
+  fixed prior latents are reused every epoch.
+- `data.test_split` is opened only by the final evaluation stage.
+- CVAE reconstruction uses an independent batch (normally 32); MILP decision
+  feedback retains the small stratified batch (normally 4).
+- The pretrained model is checkpoint candidate epoch -1. Every validation
+  epoch competes lexicographically on normalized shedding/carbon violation and
+  then exact decision regret. The winner is restored before final supports and
+  the checkpoint are written; the last epoch is not privileged.
 
 ## Configuration
 
@@ -157,6 +202,11 @@ The relevant `dfl` keys are:
 - `dfl_start_epoch`;
 - `dfl_eval_interval`;
 - `decision_batch_size`;
+- `reconstruction_batch_size`;
+- `infeasibility_aversion_alpha` and `feasibility_margin`;
+- `validation_interval`;
+- `gradient_balance_ratio`, `gradient_balance_min_scale`, and
+  `gradient_balance_max_scale`;
 - `use_solution_cache`.
 
 Setting `lambda_dfl: 0` performs no post-pretraining update, producing the exact
@@ -171,6 +221,7 @@ CVAE-only ablation. Only `recourse_feasibility` remains as a runtime DFL method.
   active feasibility run enables diagnostic slack and penalizes physical excess
   at `carbon_excess_dollars_per_t`; ordinary carbon prices never silently relax
   the constraint.
-- This surrogate is not the derivative of the MILP value function. It is an
-  ODECE-inspired directional constraint-parameter update informed by exact
-  recourse severity.
+- This is an IPL/OPL adaptation, not a claim that the paper's single-stage
+  lemmas transfer unchanged to stochastic two-stage recourse. It is not the
+  derivative of the MILP value function; exact MILP outputs provide detached
+  masks, severities, designs, and evaluation metrics.

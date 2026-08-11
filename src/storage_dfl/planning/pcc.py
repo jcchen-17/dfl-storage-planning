@@ -1,4 +1,4 @@
-"""Single-PCC storage planning with exact source/vintage carbon accounting."""
+"""Single-PCC storage planning with layered or perfectly mixed storage carbon accounting."""
 
 from __future__ import annotations
 
@@ -40,16 +40,23 @@ class _PCCArtifacts:
     diagnostic_totals: dict[str, object]
     hourly_load_shedding: tuple[tuple[object, ...], ...]
     hourly_carbon_excess: tuple[tuple[object, ...], ...]
+    grid_carbon_exposure: tuple[tuple[tuple[object, ...], ...], ...]
 
 
 class SinglePCCPlanningOracle:
     """Capacity-planning oracle for a data centre behind one grid connection.
 
     Grid, PV and diesel flows are split between the data-centre load and battery
-    charging. Battery inventory is separated into an initial layer, aggregate
-    PV and diesel layers, and one grid-charging vintage per interval. Every
-    layer has a fixed carbon intensity, so both storage carbon conservation and
-    delivered-load carbon caps remain linear and auditable.
+    charging.
+
+    ``layered_pcc`` keeps exact source/vintage energy layers with fixed carbon
+    intensities.
+
+    ``average_pcc`` uses a perfectly mixed storage "water-tank" model with one
+    energy inventory, one carbon inventory, and one endogenous average carbon
+    intensity. Carbon discharged from storage therefore carries the current
+    average tank intensity. This formulation is physically different from the
+    layered model and introduces bilinear nonlinear constraints.
     """
 
     def __init__(
@@ -62,9 +69,10 @@ class SinglePCCPlanningOracle:
     ) -> None:
         if planning.topology != "single_pcc":
             raise ValueError("SinglePCCPlanningOracle requires topology='single_pcc'.")
-        if planning.carbon_formulation != "layered_pcc":
+        if planning.carbon_formulation not in {"layered_pcc", "average_pcc"}:
             raise ValueError(
-                "single_pcc topology requires carbon_formulation='layered_pcc'."
+                "single_pcc topology requires carbon_formulation to be "
+                "'layered_pcc' or 'average_pcc'."
             )
         if planning.carbon_cap_scope not in {"hourly", "horizon"}:
             raise ValueError("carbon_cap_scope must be 'hourly' or 'horizon'.")
@@ -76,6 +84,8 @@ class SinglePCCPlanningOracle:
             raise ValueError("discharge_efficiency must lie in (0, 1].")
         if planning.diesel_carbon_t_per_mwh < 0.0:
             raise ValueError("diesel_carbon_t_per_mwh must be nonnegative.")
+        if planning.outage_carbon_cap < 0.0:
+            raise ValueError("outage_carbon_cap must be nonnegative.")
         if (data_center or DataCenterConfig()).workload_max_delay_hours != 0:
             raise ValueError(
                 "single_pcc currently requires workload_max_delay_hours=0; "
@@ -242,6 +252,13 @@ class SinglePCCPlanningOracle:
                     hourly_carbon_excess_t_per_hour=tuple(
                         tuple(max(0.0, value(variable)) for variable in row)
                         for row in artifacts.hourly_carbon_excess
+                    ),
+                    grid_carbon_exposure_mw=tuple(
+                        tuple(
+                            tuple(max(0.0, value(variable)) for variable in row)
+                            for row in matrix
+                        )
+                        for matrix in artifacts.grid_carbon_exposure
                     ),
                 ),
             )
@@ -428,6 +445,7 @@ class SinglePCCPlanningOracle:
         }
         hourly_load_shedding: list[tuple[object, ...]] = []
         hourly_carbon_excess: list[tuple[object, ...]] = []
+        grid_carbon_exposure: list[tuple[tuple[object, ...], ...]] = []
         annual_blocks = 8760.0 / (horizon * dt)
 
         for sid, (scenario, weight) in enumerate(zip(scenarios, weights, strict=True)):
@@ -449,46 +467,200 @@ class SinglePCCPlanningOracle:
             charge_mode = {}
             discharge_mode = {}
 
-            # Storage layers: initial inventory, two fixed-source aggregates,
-            # and one exact grid-carbon vintage for every charging interval.
-            layer_names = ("initial", "pv", "diesel") + tuple(
-                f"grid_{k}" for k in times
-            )
-            layer_intensity = {
-                "initial": float(pcfg.initial_carbon_intensity),
-                "pv": 0.0,
-                "diesel": float(pcfg.diesel_carbon_t_per_mwh) / eta_c,
-                **{
-                    f"grid_{k}": float(scenario.grid_carbon_t_per_mwh[k]) / eta_c
+            # -----------------------------------------------------------------
+            # Carbon accounting choice
+            #
+            # layered_pcc:
+            #   Keep exact source/vintage energy layers. Each layer has a fixed
+            #   internal carbon intensity and discharges independently.
+            #
+            # average_pcc:
+            #   Use one perfectly mixed "water tank":
+            #       E_t  = energy inventory [MWh]
+            #       M_t  = carbon inventory [tCO2]
+            #       w_t  = M_t / E_t [tCO2/MWh of stored internal energy]
+            #   Carbon leaves storage at the current average intensity.
+            #
+            # The average model is exact but nonlinear because it contains the
+            # bilinear identities M_t = w_t E_t and
+            # Cdc_t = w_t Pdc_t / eta_d.
+            # -----------------------------------------------------------------
+            if pcfg.carbon_formulation == "layered_pcc":
+                layer_names = ("initial", "pv", "diesel") + tuple(
+                    f"grid_{k}" for k in times
+                )
+                layer_intensity = {
+                    "initial": float(pcfg.initial_carbon_intensity),
+                    "pv": 0.0,
+                    "diesel": float(pcfg.diesel_carbon_t_per_mwh) / eta_c,
+                    **{
+                        f"grid_{k}": float(scenario.grid_carbon_t_per_mwh[k]) / eta_c
+                        for k in times
+                    },
+                }
+                layer_energy = {
+                    (layer, t): model.addVar(
+                        lb=0.0,
+                        ub=pcfg.max_energy_mwh,
+                        name=f"layer_e[{sid},{layer},{t}]",
+                    )
+                    for layer in layer_names
+                    for t in states
+                }
+                layer_discharge = {
+                    (layer, t): model.addVar(
+                        lb=0.0,
+                        ub=pcfg.max_power_mw,
+                        name=f"layer_dis[{sid},{layer},{t}]",
+                    )
+                    for layer in layer_names
+                    for t in times
+                }
+                for layer in layer_names:
+                    initial = pcfg.initial_soc * ecap if layer == "initial" else 0.0
+                    model.addCons(layer_energy[layer, 0] == initial)
+
+                storage_energy = None
+                storage_carbon = None
+                storage_intensity = None
+                storage_discharge = None
+                storage_discharge_carbon_rate = None
+                grid_exposure_energy = None
+                grid_exposure_discharge = None
+            else:
+                # Highest physically reachable average carbon intensity inside
+                # the cell. Charging losses reduce stored energy but do not
+                # erase the carbon attributed to the source electricity, hence
+                # charging source intensity is divided by eta_c when expressed
+                # per MWh of internal stored energy.
+                max_grid_intensity = max(
+                    float(value) for value in scenario.grid_carbon_t_per_mwh
+                )
+                max_stored_intensity = max(
+                    float(pcfg.initial_carbon_intensity),
+                    float(pcfg.diesel_carbon_t_per_mwh) / eta_c,
+                    max_grid_intensity / eta_c,
+                    0.0,
+                )
+                max_stored_carbon = (
+                    max_stored_intensity * float(pcfg.max_energy_mwh)
+                )
+
+                storage_energy = {
+                    t: model.addVar(
+                        lb=0.0,
+                        ub=pcfg.max_energy_mwh,
+                        name=f"tank_e[{sid},{t}]",
+                    )
+                    for t in states
+                }
+                storage_carbon = {
+                    t: model.addVar(
+                        lb=0.0,
+                        ub=max_stored_carbon,
+                        name=f"tank_m[{sid},{t}]",
+                    )
+                    for t in states
+                }
+                storage_intensity = {
+                    t: model.addVar(
+                        lb=0.0,
+                        ub=max_stored_intensity,
+                        name=f"tank_w[{sid},{t}]",
+                    )
+                    for t in states
+                }
+                storage_discharge = {
+                    t: model.addVar(
+                        lb=0.0,
+                        ub=pcfg.max_power_mw,
+                        name=f"tank_dis[{sid},{t}]",
+                    )
+                    for t in times
+                }
+                storage_discharge_carbon_rate = {
+                    t: model.addVar(
+                        lb=0.0,
+                        ub=max_stored_intensity * pcfg.max_power_mw / eta_d,
+                        name=f"tank_dis_carbon[{sid},{t}]",
+                    )
+                    for t in times
+                }
+
+                model.addCons(
+                    storage_energy[0] == pcfg.initial_soc * ecap,
+                    name=f"tank_initial_energy[{sid}]",
+                )
+                model.addCons(
+                    storage_carbon[0]
+                    == pcfg.initial_carbon_intensity * pcfg.initial_soc * ecap,
+                    name=f"tank_initial_carbon[{sid}]",
+                )
+                for t in states:
+                    # Perfect-mixing definition: M_t = w_t E_t.
+                    model.addCons(
+                        storage_carbon[t]
+                        == storage_intensity[t] * storage_energy[t],
+                        name=f"tank_average_intensity[{sid},{t}]",
+                    )
+                    model.addCons(
+                        storage_intensity[t] <= max_stored_intensity * site,
+                        name=f"tank_intensity_site[{sid},{t}]",
+                    )
+
+                # Exact derivative/exposure bookkeeping for DFL diagnostics.
+                # Q[k,t] = d M_t / d CI_grid[k], with units of MWh-equivalent.
+                # This does NOT split the physical storage inventory into
+                # vintages; it only tracks sensitivity of the mixed carbon stock.
+                exposure_energy_ub = float(pcfg.max_energy_mwh) / eta_c
+                exposure_discharge_ub = (
+                    float(pcfg.max_power_mw) / (eta_c * eta_d)
+                )
+                grid_exposure_energy = {
+                    (k, t): model.addVar(
+                        lb=0.0,
+                        ub=exposure_energy_ub,
+                        name=f"tank_grid_exposure_e[{sid},{k},{t}]",
+                    )
                     for k in times
-                },
-            }
-            layer_energy = {
-                (layer, t): model.addVar(
-                    lb=0.0,
-                    ub=pcfg.max_energy_mwh,
-                    name=f"layer_e[{sid},{layer},{t}]",
-                )
-                for layer in layer_names
-                for t in states
-            }
-            layer_discharge = {
-                (layer, t): model.addVar(
-                    lb=0.0,
-                    ub=pcfg.max_power_mw,
-                    name=f"layer_dis[{sid},{layer},{t}]",
-                )
-                for layer in layer_names
-                for t in times
-            }
-            for layer in layer_names:
-                initial = pcfg.initial_soc * ecap if layer == "initial" else 0.0
-                model.addCons(layer_energy[layer, 0] == initial)
+                    for t in states
+                }
+                grid_exposure_discharge = {
+                    (k, t): model.addVar(
+                        lb=0.0,
+                        ub=exposure_discharge_ub,
+                        name=f"tank_grid_exposure_dis[{sid},{k},{t}]",
+                    )
+                    for k in times
+                    for t in times
+                }
+                for k in times:
+                    model.addCons(
+                        grid_exposure_energy[k, 0] == 0.0,
+                        name=f"tank_grid_exposure_initial[{sid},{k}]",
+                    )
+                    for t in states:
+                        # A single grid-intensity perturbation cannot account
+                        # for more exposure-equivalent energy than is physically
+                        # present in the mixed tank.
+                        model.addCons(
+                            grid_exposure_energy[k, t]
+                            <= storage_energy[t] / eta_c,
+                            name=f"tank_grid_exposure_energy_bound[{sid},{k},{t}]",
+                        )
+
+                layer_names = ()
+                layer_intensity = {}
+                layer_energy = {}
+                layer_discharge = {}
 
             horizon_carbon: list[object] = []
             horizon_served: list[object] = []
+            horizon_carbon_budget: list[object] = []
             scenario_hourly_shed: list[object] = []
             scenario_hourly_carbon_excess: list[object] = []
+            scenario_carbon_exposure: list[tuple[object, ...]] = []
+
             for t in times:
                 grid_load[t] = model.addVar(
                     lb=0.0, ub=pcfg.grid_limit_mw, name=f"grid_load[{sid},{t}]"
@@ -512,17 +684,30 @@ class SinglePCCPlanningOracle:
                 shed[t] = model.addVar(
                     lb=0.0, ub=float(demand[t]), name=f"dc_shed[{sid},{t}]"
                 )
+                if not pcfg.allow_grid_connected_shedding:
+                    model.addCons(
+                        shed[t]
+                        <= float(demand[t])
+                        * (1.0 - float(scenario.grid_available[t])),
+                        name=f"outage_only_shedding[{sid},{t}]",
+                    )
                 charge_mode[t] = model.addVar(vtype="B", name=f"charge_mode[{sid},{t}]")
                 discharge_mode[t] = model.addVar(
                     vtype="B", name=f"discharge_mode[{sid},{t}]"
                 )
+
                 total_grid = grid_load[t] + grid_charge[t]
                 total_charge = grid_charge[t] + pv_charge[t] + diesel_charge[t]
-                total_discharge = quicksum(
-                    layer_discharge[layer, t] for layer in layer_names
-                )
+                if pcfg.carbon_formulation == "layered_pcc":
+                    total_discharge = quicksum(
+                        layer_discharge[layer, t] for layer in layer_names
+                    )
+                else:
+                    total_discharge = storage_discharge[t]
+
                 served = float(demand[t]) - shed[t]
                 scenario_hourly_shed.append(shed[t])
+
                 model.addCons(
                     grid_load[t]
                     + pv_load[t]
@@ -551,52 +736,136 @@ class SinglePCCPlanningOracle:
                 model.addCons(total_discharge <= pcfg.max_power_mw * discharge_mode[t])
                 model.addCons(charge_mode[t] + discharge_mode[t] <= site)
 
-                for layer in layer_names:
-                    available = retention * layer_energy[layer, t]
-                    model.addCons(layer_discharge[layer, t] / eta_d <= available)
-                    addition = 0.0
-                    if layer == "pv":
-                        addition = eta_c * pv_charge[t]
-                    elif layer == "diesel":
-                        addition = eta_c * diesel_charge[t]
-                    elif layer == f"grid_{t}":
-                        addition = eta_c * grid_charge[t]
-                    model.addCons(
-                        layer_energy[layer, t + 1]
-                        == available + addition - layer_discharge[layer, t] / eta_d,
-                        name=f"layer_balance[{sid},{layer},{t}]",
-                    )
-                total_energy = quicksum(
-                    layer_energy[layer, t + 1] for layer in layer_names
+                storage_charge_carbon = (
+                    float(scenario.grid_carbon_t_per_mwh[t]) * grid_charge[t]
+                    + float(pcfg.diesel_carbon_t_per_mwh) * diesel_charge[t]
                 )
-                model.addCons(total_energy >= pcfg.min_soc * ecap)
-                model.addCons(total_energy <= pcfg.max_soc * ecap)
 
-                delivered_carbon = (
-                    float(scenario.grid_carbon_t_per_mwh[t]) * grid_load[t]
-                    + float(pcfg.diesel_carbon_t_per_mwh) * diesel_load[t]
-                    + quicksum(
+                if pcfg.carbon_formulation == "layered_pcc":
+                    for layer in layer_names:
+                        available = retention * layer_energy[layer, t]
+                        # layer_energy is an energy state [MWh], so the power
+                        # withdrawn/added over an interval must be multiplied by dt.
+                        model.addCons(
+                            layer_discharge[layer, t] * dt / eta_d <= available
+                        )
+                        addition = 0.0
+                        if layer == "pv":
+                            addition = eta_c * pv_charge[t] * dt
+                        elif layer == "diesel":
+                            addition = eta_c * diesel_charge[t] * dt
+                        elif layer == f"grid_{t}":
+                            addition = eta_c * grid_charge[t] * dt
+                        model.addCons(
+                            layer_energy[layer, t + 1]
+                            == available
+                            + addition
+                            - layer_discharge[layer, t] * dt / eta_d,
+                            name=f"layer_balance[{sid},{layer},{t}]",
+                        )
+
+                    total_energy_next = quicksum(
+                        layer_energy[layer, t + 1] for layer in layer_names
+                    )
+                    model.addCons(total_energy_next >= pcfg.min_soc * ecap)
+                    model.addCons(total_energy_next <= pcfg.max_soc * ecap)
+
+                    storage_discharge_carbon = quicksum(
                         layer_intensity[layer]
                         * layer_discharge[layer, t]
                         / eta_d
                         for layer in layer_names
                     )
+                    scenario_carbon_exposure.append(
+                        tuple(
+                            (grid_load[t] if k == t else 0.0)
+                            + layer_discharge[f"grid_{k}", t] / (eta_c * eta_d)
+                            for k in times
+                        )
+                    )
+                else:
+                    available_energy = retention * storage_energy[t]
+                    model.addCons(
+                        total_discharge * dt / eta_d <= available_energy,
+                        name=f"tank_discharge_available[{sid},{t}]",
+                    )
+                    model.addCons(
+                        storage_energy[t + 1]
+                        == available_energy
+                        + eta_c * total_charge * dt
+                        - total_discharge * dt / eta_d,
+                        name=f"tank_energy_balance[{sid},{t}]",
+                    )
+                    model.addCons(storage_energy[t + 1] >= pcfg.min_soc * ecap)
+                    model.addCons(storage_energy[t + 1] <= pcfg.max_soc * ecap)
+
+                    # Carbon removed by discharge uses the *current average*
+                    # carbon intensity of the perfectly mixed tank.
+                    model.addCons(
+                        storage_discharge_carbon_rate[t]
+                        == storage_intensity[t] * total_discharge / eta_d,
+                        name=f"tank_discharge_carbon[{sid},{t}]",
+                    )
+                    model.addCons(
+                        storage_carbon[t + 1]
+                        == retention * storage_carbon[t]
+                        + storage_charge_carbon * dt
+                        - storage_discharge_carbon_rate[t] * dt,
+                        name=f"tank_carbon_balance[{sid},{t}]",
+                    )
+                    storage_discharge_carbon = storage_discharge_carbon_rate[t]
+
+                    # Propagate the exact sensitivity of the mixed carbon stock
+                    # to each grid-carbon-intensity input.
+                    for k in times:
+                        model.addCons(
+                            grid_exposure_discharge[k, t]
+                            <= total_discharge / (eta_c * eta_d),
+                            name=f"tank_grid_exposure_discharge_bound[{sid},{k},{t}]",
+                        )
+                        model.addCons(
+                            grid_exposure_discharge[k, t] * storage_energy[t]
+                            == grid_exposure_energy[k, t]
+                            * total_discharge
+                            / eta_d,
+                            name=f"tank_grid_exposure_mix[{sid},{k},{t}]",
+                        )
+                        exposure_addition = grid_charge[t] * dt if k == t else 0.0
+                        model.addCons(
+                            grid_exposure_energy[k, t + 1]
+                            == retention * grid_exposure_energy[k, t]
+                            + exposure_addition
+                            - grid_exposure_discharge[k, t] * dt,
+                            name=f"tank_grid_exposure_balance[{sid},{k},{t}]",
+                        )
+                    scenario_carbon_exposure.append(
+                        tuple(
+                            (grid_load[t] if k == t else 0.0)
+                            + grid_exposure_discharge[k, t]
+                            for k in times
+                        )
+                    )
+
+                # Carbon delivered to the data centre in this interval.
+                # Charging carbon is stored in the battery carbon inventory and
+                # is NOT charged to the data-centre load until that energy is
+                # eventually discharged.
+                delivered_carbon = (
+                    float(scenario.grid_carbon_t_per_mwh[t]) * grid_load[t]
+                    + float(pcfg.diesel_carbon_t_per_mwh) * diesel_load[t]
+                    + storage_discharge_carbon
                 )
-                storage_discharge_carbon = quicksum(
-                    layer_intensity[layer]
-                    * layer_discharge[layer, t]
-                    / eta_d
-                    for layer in layer_names
-                )
+
+                # Source-side operational emissions are retained as a separate
+                # ledger diagnostic. They are not the load-side carbon-intensity
+                # compliance expression for either carbon formulation.
                 source_operational_carbon = (
                     float(scenario.grid_carbon_t_per_mwh[t]) * total_grid
                     + float(pcfg.diesel_carbon_t_per_mwh)
                     * (diesel_load[t] + diesel_charge[t])
                 )
-                storage_charge_carbon = (
-                    float(scenario.grid_carbon_t_per_mwh[t]) * grid_charge[t]
-                    + float(pcfg.diesel_carbon_t_per_mwh) * diesel_charge[t]
-                )
+                compliance_carbon = delivered_carbon
+
                 ledger_values = {
                     "grid_import_mwh": total_grid,
                     "diesel_generation_mwh": diesel_load[t] + diesel_charge[t],
@@ -611,10 +880,17 @@ class SinglePCCPlanningOracle:
                 }
                 for ledger_name, expression in ledger_values.items():
                     ledger_terms[ledger_name].append(scale * expression * dt)
+
+                interval_carbon_cap = (
+                    pcfg.outage_carbon_cap
+                    if pcfg.outage_carbon_cap > 0.0
+                    and float(scenario.grid_available[t]) < 0.5
+                    else pcfg.dc_carbon_cap
+                )
                 if pcfg.carbon_cap_scope == "hourly":
                     carbon_excess = self._add_carbon_cap(
                         model,
-                        delivered_carbon,
+                        compliance_carbon,
                         served,
                         scale,
                         dt,
@@ -622,14 +898,16 @@ class SinglePCCPlanningOracle:
                         t,
                         allow_carbon_slack,
                         carbon_terms,
+                        carbon_budget=interval_carbon_cap * served,
                     )
                     scenario_hourly_carbon_excess.append(carbon_excess)
                     diagnostic_terms["carbon_excess_t"].append(
                         scale * carbon_excess * dt
                     )
                 else:
-                    horizon_carbon.append(delivered_carbon * dt)
+                    horizon_carbon.append(compliance_carbon * dt)
                     horizon_served.append(served * dt)
+                    horizon_carbon_budget.append(interval_carbon_cap * served * dt)
 
                 interval_cost = (
                     float(scenario.grid_price_per_mwh[t]) * total_grid
@@ -647,18 +925,31 @@ class SinglePCCPlanningOracle:
                 )
                 diagnostic_terms["served_demand_mwh"].append(scale * served * dt)
 
-            terminal_energy = quicksum(
-                layer_energy[layer, horizon] for layer in layer_names
-            )
-            model.addCons(terminal_energy == pcfg.initial_soc * ecap)
-            terminal_carbon = quicksum(
-                layer_intensity[layer] * layer_energy[layer, horizon]
-                for layer in layer_names
-            )
+            if pcfg.carbon_formulation == "layered_pcc":
+                terminal_energy = quicksum(
+                    layer_energy[layer, horizon] for layer in layer_names
+                )
+                model.addCons(terminal_energy == pcfg.initial_soc * ecap)
+                terminal_carbon = quicksum(
+                    layer_intensity[layer] * layer_energy[layer, horizon]
+                    for layer in layer_names
+                )
+            else:
+                terminal_energy = storage_energy[horizon]
+                terminal_carbon = storage_carbon[horizon]
+                model.addCons(
+                    terminal_energy == pcfg.initial_soc * ecap,
+                    name=f"tank_terminal_energy[{sid}]",
+                )
+
+            # Preserve the original terminal-carbon policy: the representative
+            # horizon may not end with a dirtier battery than it started with.
             model.addCons(
                 terminal_carbon
-                <= pcfg.initial_carbon_intensity * pcfg.initial_soc * ecap
+                <= pcfg.initial_carbon_intensity * pcfg.initial_soc * ecap,
+                name=f"terminal_carbon[{sid}]",
             )
+
             if pcfg.carbon_cap_scope == "horizon":
                 horizon_excess = self._add_carbon_cap(
                     model,
@@ -670,13 +961,16 @@ class SinglePCCPlanningOracle:
                     None,
                     allow_carbon_slack,
                     carbon_terms,
+                    carbon_budget=quicksum(horizon_carbon_budget),
                 )
                 diagnostic_terms["carbon_excess_t"].append(scale * horizon_excess)
                 # A horizon budget has one aggregate excess rather than one
                 # value per hour; retain it as a one-element diagnostic row.
                 scenario_hourly_carbon_excess.append(horizon_excess)
+
             hourly_load_shedding.append(tuple(scenario_hourly_shed))
             hourly_carbon_excess.append(tuple(scenario_hourly_carbon_excess))
+            grid_carbon_exposure.append(tuple(scenario_carbon_exposure))
 
         operating = ccfg.demand_dollars_per_mw_year * peak_grid + quicksum(
             operating_terms
@@ -704,6 +998,7 @@ class SinglePCCPlanningOracle:
             diagnostic_totals=diagnostic_totals,
             hourly_load_shedding=tuple(hourly_load_shedding),
             hourly_carbon_excess=tuple(hourly_carbon_excess),
+            grid_carbon_exposure=tuple(grid_carbon_exposure),
         )
 
     def _add_carbon_cap(
@@ -717,14 +1012,20 @@ class SinglePCCPlanningOracle:
         time: int | None,
         allow_carbon_slack: bool,
         carbon_terms: list[object],
+        carbon_budget: object | None = None,
     ) -> object:
         """Apply an hourly intensity cap or a horizon energy-weighted budget."""
 
         name = f"{sid}" if time is None else f"{sid},{time}"
+        budget = (
+            self.planning.dc_carbon_cap * served_energy_or_power
+            if carbon_budget is None
+            else carbon_budget
+        )
         if allow_carbon_slack:
             excess = model.addVar(lb=0.0, name=f"carbon_excess[{name}]")
             model.addCons(
-                carbon <= self.planning.dc_carbon_cap * served_energy_or_power + excess,
+                carbon <= budget + excess,
                 name=f"dc_carbon_cap[{name}]",
             )
             carbon_terms.append(
@@ -736,7 +1037,7 @@ class SinglePCCPlanningOracle:
             return excess
         else:
             model.addCons(
-                carbon <= self.planning.dc_carbon_cap * served_energy_or_power,
+                carbon <= budget,
                 name=f"dc_carbon_cap[{name}]",
             )
             return 0.0

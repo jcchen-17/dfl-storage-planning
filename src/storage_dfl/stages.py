@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import csv
+import hashlib
 import time
 from dataclasses import asdict, dataclass, replace
 from math import isfinite
@@ -32,7 +33,11 @@ from storage_dfl.models import (
     save_generator,
     train_generator,
 )
-from storage_dfl.network import Feeder, single_pcc_microgrid
+from storage_dfl.network import (
+    Feeder,
+    ieee13_unbalanced_microgrid,
+    single_pcc_microgrid,
+)
 from storage_dfl.planning import (
     PlanningResult,
     StorageDesign,
@@ -158,6 +163,17 @@ def _summary_writer(path: Path, enabled: bool, config: ExperimentConfig):
     return writer
 
 
+def _compact_run_name(prefix: str, tag: str, max_length: int = 40) -> str:
+    """Keep TensorBoard event paths below the Windows legacy path limit."""
+
+    candidate = f"{prefix}_{tag}"
+    if len(candidate) <= max_length:
+        return candidate
+    digest = hashlib.sha1(candidate.encode("utf-8")).hexdigest()[:8]
+    readable_length = max_length - len(prefix) - len(digest) - 2
+    return f"{prefix}_{tag[:readable_length]}_{digest}"
+
+
 def _experiment_data(
     config: ExperimentConfig,
     split: str,
@@ -169,20 +185,33 @@ def _experiment_data(
     )
     if config.planning.topology != "single_pcc":
         raise ValueError("Only planning.topology='single_pcc' is retained.")
-    feeder = single_pcc_microgrid()
+    source_feeder = ieee13_unbalanced_microgrid()
+    source_bus = config.data.pcc_source_bus
+    if source_bus not in source_feeder.bus_index:
+        raise ValueError(f"Unknown PCC source bus {source_bus!r}.")
+    source_index = source_feeder.bus_index[source_bus]
+    source_pv_capacity = float(source_feeder.pv_capacity_mw[source_index].sum())
+    target_pv_capacity = float(config.data.pcc_pv_capacity_mw)
+    if source_pv_capacity <= 0.0:
+        raise ValueError(f"PCC source bus {source_bus!r} has no PV capacity.")
+    if target_pv_capacity <= 0.0:
+        raise ValueError("data.pcc_pv_capacity_mw must be positive.")
+    pv_scale = target_pv_capacity / source_pv_capacity
+    feeder = single_pcc_microgrid(pv_capacity_mw=target_pv_capacity)
     aggregated = []
     for scenario in pool.scenarios:
-        # In the reduced model the only demand behind the meter is the data
-        # centre. Its facility load is derived once from the observed
-        # workload/PUE traces, then exposed as the active-load channel so
-        # CVAE auxiliary net-load losses remain decision relevant.
+        # The source data contain no metered data-center power. Build a
+        # calibrated 10 MW-class facility trajectory from the Azure workload
+        # proxy and temperature-derived PUE. Keep only bus 675's co-located PV,
+        # rescaled from its original 0.65 MW rating to the configured 5 MW
+        # installation; never sum feeder loads or PV into the PCC.
         dc_load = np.asarray(
             config.data_center.power_mw(
                 scenario.pue, scenario.workload_arrival
             ),
             dtype=float,
         )
-        pv = scenario.pv_available_mw.sum(axis=(1, 2))
+        pv = scenario.pv_available_mw[:, source_index, :].sum(axis=1) * pv_scale
         active = np.repeat(dc_load[:, None, None] / 3.0, 3, axis=2)
         pcc_pv = np.repeat(pv[:, None, None] / 3.0, 3, axis=2)
         aggregated.append(
@@ -410,6 +439,21 @@ def _method_tag(config: ExperimentConfig) -> str:
     """Artifact suffix for the retained feasibility method and CAPEX case."""
 
     base = config.dfl.method
+    if config.planning.carbon_formulation != "layered_pcc":
+        base = f"{base}_{config.planning.carbon_formulation}"
+    if config.planning.carbon_cap_scope == "horizon":
+        base = f"{base}_horizon_cap"
+    else:
+        base = f"{base}_hourly_cap"
+    if config.planning.outage_carbon_cap > 0.0:
+        outage_tag = f"{100.0 * config.planning.outage_carbon_cap:g}".replace(".", "p")
+        base = f"{base}_outage_cap{outage_tag}"
+    if not config.dfl.initialize_from_pretrained:
+        base = f"{base}_joint_scratch"
+    if config.dfl.fixed_decision_anchors:
+        base = f"{base}_aligned_supports"
+    if config.dfl.checkpoint_selection == "carbon_first":
+        base = f"{base}_carbon_first"
     scale = float(config.costs.battery_capex_scale)
     if abs(scale - 1.0) <= 1.0e-12:
         return base
@@ -424,8 +468,24 @@ def train_dfl_stage(
     method_override: str | None = None,
     generator_override: str | None = None,
     battery_capex_scale: float | None = None,
+    carbon_formulation_override: str | None = None,
+    carbon_cap_scope_override: str | None = None,
 ) -> dict:
     config = _apply_generator_override(load_config(config_path), generator_override)
+    if carbon_formulation_override is not None:
+        config = replace(
+            config,
+            planning=replace(
+                config.planning, carbon_formulation=carbon_formulation_override
+            ),
+        )
+    if carbon_cap_scope_override is not None:
+        config = replace(
+            config,
+            planning=replace(
+                config.planning, carbon_cap_scope=carbon_cap_scope_override
+            ),
+        )
     if battery_capex_scale is not None:
         if battery_capex_scale <= 0.0:
             raise ValueError("battery_capex_scale must be positive.")
@@ -446,11 +506,28 @@ def train_dfl_stage(
     paths.root.mkdir(parents=True, exist_ok=True)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
-    feeder, observed_pool = _experiment_data(config, config.data.validation_split)
+    # DFL updates use only the training split.  The validation split is fixed
+    # and read-only for checkpoint selection; evaluate_stage alone sees test.
+    feeder, observed_pool = _experiment_data(config, config.data.train_split)
+    validation_feeder, validation_pool = _experiment_data(
+        config, config.data.validation_split
+    )
+    if validation_feeder.buses != feeder.buses:
+        raise ValueError("Training and validation splits use different feeders.")
     codec = _load_codec(paths, feeder)
     _require_current_codec(config, codec)
     device = resolve_device(config.dfl.device)
-    cvae = load_generator(paths, config.generator.kind, device)
+    if config.dfl.initialize_from_pretrained:
+        cvae = load_generator(paths, config.generator.kind, device)
+        print("DFL initialization: pretrained generator checkpoint", flush=True)
+    else:
+        cvae = build_generator(
+            config, codec.trajectory_dim, codec.context_dim
+        ).to(device)
+        print(
+            "DFL initialization: random generator weights; normalization reused",
+            flush=True,
+        )
     # The training loop may run at a looser tolerance than the reported numbers.
     # evaluate_stage builds its own oracle from config.planning, so whatever is
     # set here never reaches a reported objective.
@@ -469,7 +546,11 @@ def train_dfl_stage(
     oracle = make_planning_oracle(
         feeder, training_planning, config.costs, config.data, config.data_center
     )
-    writer = _summary_writer(paths.tensorboard / f"dfl_{tag}", tensorboard, config)
+    validation_oracle = make_planning_oracle(
+        feeder, config.planning, config.costs, config.data, config.data_center
+    )
+    tensorboard_name = _compact_run_name("dfl", tag)
+    writer = _summary_writer(paths.tensorboard / tensorboard_name, tensorboard, config)
     try:
         result = train_recourse_feasibility_cvae(
             cvae,
@@ -479,6 +560,8 @@ def train_dfl_stage(
             config.cvae,
             config.dfl,
             config.seed,
+            validation_pool=validation_pool,
+            validation_oracle=validation_oracle,
             writer=writer,
         )
         support_source_names = ["direct_cvae_prior"] * len(
@@ -507,6 +590,13 @@ def train_dfl_stage(
         # during training so a near-degenerate replan that flips bus or capacity
         # is visible instead of looking like a change learned by DFL.
         "selected_training_design": result.planning_result.to_dict()["design"],
+        "best_epoch": int(result.best_epoch),
+        "initialize_from_pretrained": config.dfl.initialize_from_pretrained,
+        "carbon_formulation": config.planning.carbon_formulation,
+        "fixed_decision_anchors": config.dfl.fixed_decision_anchors,
+        "dfl_statistical_weight": config.dfl.dfl_statistical_weight,
+        "gradient_balance_ratio": config.dfl.gradient_balance_ratio,
+        "gradient_balance_max_scale": config.dfl.gradient_balance_max_scale,
     }
     checkpoint["fine_tuned_generator_state_dict"] = cvae.state_dict()
     checkpoint["decision_regret"] = float(result.decision_regret)
@@ -518,8 +608,10 @@ def train_dfl_stage(
     )
     payload = {
         "device": result.device,
-        "split": config.data.validation_split,
-        "validation_scenarios": len(observed_pool.scenarios),
+        "training_split": config.data.train_split,
+        "validation_split": config.data.validation_split,
+        "training_scenarios": len(observed_pool.scenarios),
+        "validation_scenarios": len(validation_pool.scenarios),
         "method": config.dfl.method,
         "generator": config.generator.kind,
         "epochs": len(result.history),
@@ -533,7 +625,12 @@ def train_dfl_stage(
         "support_source_names": checkpoint["support_source_names"],
         "planning": result.planning_result.to_dict(),
         "training_validation": result.full_validation_result.to_dict(),
+        "best_epoch": int(result.best_epoch),
         "checkpoint": str(dfl_checkpoint),
+        "fixed_decision_anchors": config.dfl.fixed_decision_anchors,
+        "dfl_statistical_weight": config.dfl.dfl_statistical_weight,
+        "gradient_balance_ratio": config.dfl.gradient_balance_ratio,
+        "gradient_balance_max_scale": config.dfl.gradient_balance_max_scale,
     }
     payload["perfect_information_reference"] = result.reference_result.to_dict()
     payload["decision_regret"] = float(result.decision_regret)
@@ -726,8 +823,25 @@ def evaluate_stage(
     generator_override: str | None = None,
     memory_limit_mb: float | None = None,
     scenarios: int | None = None,
+    carbon_formulation_override: str | None = None,
+    carbon_cap_scope_override: str | None = None,
+    evaluation_carbon_formulation_override: str | None = None,
 ) -> dict:
     config = _apply_generator_override(load_config(config_path), generator_override)
+    if carbon_formulation_override is not None:
+        config = replace(
+            config,
+            planning=replace(
+                config.planning, carbon_formulation=carbon_formulation_override
+            ),
+        )
+    if carbon_cap_scope_override is not None:
+        config = replace(
+            config,
+            planning=replace(
+                config.planning, carbon_cap_scope=carbon_cap_scope_override
+            ),
+        )
     if scenarios is not None:
         # final_validation_size is read here and by the end-of-training finalist
         # comparison, which runs under the training memory budget. Overriding it
@@ -777,6 +891,23 @@ def evaluate_stage(
             f"Requested DFL method {config.dfl.method!r}, but checkpoint "
             f"{checkpoint_path} contains {checkpoint_method!r}. Train that method first."
         )
+    checkpoint_carbon = checkpoint.get("carbon_formulation", "layered_pcc")
+    if checkpoint_carbon != config.planning.carbon_formulation:
+        raise RuntimeError(
+            f"Requested carbon formulation {config.planning.carbon_formulation!r}, "
+            f"but checkpoint contains {checkpoint_carbon!r}."
+        )
+    evaluation_planning = config.planning
+    if evaluation_carbon_formulation_override is not None:
+        evaluation_planning = replace(
+            evaluation_planning,
+            carbon_formulation=evaluation_carbon_formulation_override,
+        )
+    result_tag = tag
+    if evaluation_planning.carbon_formulation != config.planning.carbon_formulation:
+        result_tag = (
+            f"{tag}_audit_{evaluation_planning.carbon_formulation}"
+        )
     checkpoint_generator = str(checkpoint.get("generator", "cvae"))
     if checkpoint_generator != config.generator.kind:
         raise RuntimeError(
@@ -807,7 +938,7 @@ def evaluate_stage(
         )
 
     oracle = make_planning_oracle(
-        feeder, config.planning, config.costs, config.data, config.data_center
+        feeder, evaluation_planning, config.costs, config.data, config.data_center
     )
     planning = oracle.solve(
         generated,
@@ -875,7 +1006,7 @@ def evaluate_stage(
             evaluation_weights,
             evaluation_design,
             config.costs.demand_dollars_per_mw_year,
-            config.planning.solver_relative_gap,
+            evaluation_planning.solver_relative_gap,
         )
     )
     if not validation.feasible:
@@ -889,7 +1020,7 @@ def evaluate_stage(
     # so the difference against this reference is reported alongside it.
     reference_oracle = StoragePlanningOracle(
         feeder,
-        replace(config.planning, max_storage_sites=0),
+        replace(evaluation_planning, max_storage_sites=0),
         config.costs,
         config.data,
         config.data_center,
@@ -911,7 +1042,7 @@ def evaluate_stage(
             evaluation_weights,
             no_storage_design,
             config.costs.demand_dollars_per_mw_year,
-            config.planning.solver_relative_gap,
+            evaluation_planning.solver_relative_gap,
         )
     )
     perfect_information = None
@@ -933,7 +1064,9 @@ def evaluate_stage(
         "device": str(device),
         "test_split": config.data.test_split,
         "test_scenarios_evaluated": len(evaluation_pool.scenarios),
-        "evaluation_relative_gap": config.planning.solver_relative_gap,
+        "evaluation_relative_gap": evaluation_planning.solver_relative_gap,
+        "trained_carbon_formulation": config.planning.carbon_formulation,
+        "evaluation_carbon_formulation": evaluation_planning.carbon_formulation,
         "planning_oracle": "single_pcc",
         "evaluation_selection_rule": config.dfl.evaluation_selection_rule,
         "evaluation_scenario_names": list(evaluation_names),
@@ -944,13 +1077,13 @@ def evaluate_stage(
         ],
         "no_storage_wall_seconds": reference_wall_seconds,
         "objectives_comparable": (
-            _bounded_result(reference, config.planning.solver_relative_gap)
-            and _bounded_result(validation, config.planning.solver_relative_gap)
+            _bounded_result(reference, evaluation_planning.solver_relative_gap)
+            and _bounded_result(validation, evaluation_planning.solver_relative_gap)
         ),
         "storage_value": (
             float(reference.objective) - float(validation.objective)
-            if _bounded_result(reference, config.planning.solver_relative_gap)
-            and _bounded_result(validation, config.planning.solver_relative_gap)
+            if _bounded_result(reference, evaluation_planning.solver_relative_gap)
+            and _bounded_result(validation, evaluation_planning.solver_relative_gap)
             else None
         ),
         "generated_scenarios": [
@@ -977,9 +1110,9 @@ def evaluate_stage(
         ),
         "decision_regret": exact_decision_regret,
     }
-    _write_json(paths.dfl_json_for("result", tag), payload)
+    _write_json(paths.dfl_json_for("result", result_tag), payload)
     _write_trajectories(
-        paths.root / f"scenario_trajectories_{tag}.csv",
+        paths.root / f"scenario_trajectories_{result_tag}.csv",
         evaluation_pool,
         generated,
         weights,

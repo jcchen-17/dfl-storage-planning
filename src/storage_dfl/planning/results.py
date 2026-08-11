@@ -37,6 +37,11 @@ class RecourseDiagnostics:
     total_planning_cost: float
     hourly_load_shedding_mw: tuple[tuple[float, ...], ...] = ()
     hourly_carbon_excess_t_per_hour: tuple[tuple[float, ...], ...] = ()
+    # Per scenario, compliance-hour by grid-source-hour derivative of reported
+    # carbon with respect to grid intensity. This exposes which charging
+    # vintage ultimately supplies each discharge hour without differentiating
+    # through the MILP.
+    grid_carbon_exposure_mw: tuple[tuple[tuple[float, ...], ...], ...] = ()
 
 
 @dataclass(frozen=True)

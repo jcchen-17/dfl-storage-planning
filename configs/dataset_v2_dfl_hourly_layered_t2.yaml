@@ -178,14 +178,14 @@ planning:
 
 costs:
   capital_recovery_factor: 0.09
-  site_dollars: 20000.0
-  power_dollars_per_mw: 140000.0
-  energy_dollars_per_mwh: 135000.0
+  site_dollars: 25000.0
+  power_dollars_per_mw: 150000.0
+  energy_dollars_per_mwh: 140000.0
   degradation_dollars_per_mwh: 7.0
   demand_dollars_per_mw_year: 160000.0
-  generator_dollars_per_mwh: 250.0
+  generator_dollars_per_mwh: 180.0
   curtailment_dollars_per_mwh: 4.0
-  shedding_dollars_per_mwh: 10000.0
+  shedding_dollars_per_mwh: 20000.0
   # Economic penalty for exceeding the mixed normal/outage horizon budget.
   # Physical excess remains feasible and is reported explicitly.
   carbon_excess_dollars_per_t: 500.0
