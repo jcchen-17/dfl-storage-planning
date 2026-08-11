@@ -55,6 +55,14 @@ def main() -> None:
             "results are aggregated, avoiding a multi-scenario memory spike."
         ),
     )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help=(
+            "evaluate this exact DFL checkpoint; when omitted, use the most "
+            "recently completed run manifest and then legacy paths as fallback"
+        ),
+    )
     args = parser.parse_args()
     print(f"Starting evaluation with {args.config}...", flush=True)
     result = evaluate_stage(
@@ -67,9 +75,13 @@ def main() -> None:
         evaluation_carbon_formulation_override=(
             args.evaluation_carbon_formulation
         ),
+        checkpoint_override=args.checkpoint,
     )
     print(f"generator: {result['generator']}")
     print(f"method: {result['method']}")
+    print(f"evaluated checkpoint: {result['evaluated_checkpoint']}")
+    if result.get("training_run_id") is not None:
+        print(f"training run id: {result['training_run_id']}")
     print(f"trained carbon formulation: {result['trained_carbon_formulation']}")
     print(f"evaluation carbon formulation: {result['evaluation_carbon_formulation']}")
     planning = result["planning"]

@@ -74,7 +74,7 @@ dfl:
   # Hourly carbon constraints yield one slack signal per interval, so use a
   # moderate carbon weight and allow the random CVAE to learn basic trajectories
   # before decision feedback begins.
-  feasibility_carbon_weight: 2.0
+  feasibility_carbon_weight: 2.5
   dfl_start_epoch: 10
   dfl_eval_interval: 1
   # Stable-anchor mode uses the final eight supports directly. This value is
@@ -86,13 +86,13 @@ dfl:
   use_solution_cache: true
   # Odece-style balance: IPL avoids optimistic/infeasible supports; OPL avoids
   # over-conservative supports that exclude the real optimal design.
-  infeasibility_aversion_alpha: 0.5
+  infeasibility_aversion_alpha: 0.25
   feasibility_margin: 0.05
   # Reconstruction and decision supervision use independent batches.
   reconstruction_batch_size: 32
   # After the ten-epoch warm-up, keep reconstruction as a regularizer while
   # allowing the stable decision signal to shape the decoder.
-  dfl_statistical_weight: 0.20
+  dfl_statistical_weight: 0.30
   # The held-out validation bag and latent supports stay fixed across epochs.
   validation_interval: 1
   # Balance gradients only in the decoder, the parameter subspace reached by
@@ -188,7 +188,7 @@ costs:
   shedding_dollars_per_mwh: 20000.0
   # Economic penalty for exceeding the mixed normal/outage horizon budget.
   # Physical excess remains feasible and is reported explicitly.
-  carbon_excess_dollars_per_t: 300.0
+  carbon_excess_dollars_per_t: 200.0
 
 # New physical scaling invalidates the old normalization and CVAE checkpoint;
 # use a clean artifact namespace so stale feeder-aggregate models cannot load.

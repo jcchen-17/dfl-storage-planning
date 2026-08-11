@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import csv
 import hashlib
+import os
 import time
 from dataclasses import asdict, dataclass, replace
 from math import isfinite
@@ -76,6 +77,12 @@ class ArtifactPaths:
     def dfl_json_for(self, stem: str, method: str) -> Path:
         return self.root / f"{stem}_{method}.json"
 
+    def dfl_run_dir(self, method: str, run_id: str) -> Path:
+        return self.root / "dfl_runs" / method / run_id
+
+    def dfl_latest_for(self, method: str) -> Path:
+        return self.root / f"dfl_latest_{method}.json"
+
     @property
     def normalization(self) -> Path:
         return self.root / "normalization.json"
@@ -129,6 +136,14 @@ def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as stream:
         json.dump(sanitized, stream, indent=2, ensure_ascii=False, allow_nan=False)
+
+
+def _write_json_atomic(path: Path, payload: object) -> None:
+    """Atomically replace a small JSON manifest shared by concurrent runs."""
+
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    _write_json(temporary, payload)
+    os.replace(temporary, path)
 
 
 def _read_json(path: Path) -> Any:
@@ -470,6 +485,7 @@ def train_dfl_stage(
     battery_capex_scale: float | None = None,
     carbon_formulation_override: str | None = None,
     carbon_cap_scope_override: str | None = None,
+    run_id: str | None = None,
 ) -> dict:
     config = _apply_generator_override(load_config(config_path), generator_override)
     if carbon_formulation_override is not None:
@@ -504,6 +520,17 @@ def train_dfl_stage(
     tag = _method_tag(config)
     paths = ArtifactPaths(config.output_dir)
     paths.root.mkdir(parents=True, exist_ok=True)
+    if run_id is None:
+        run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-p{os.getpid()}"
+    allowed_run_id_characters = (
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    )
+    if not run_id or any(
+        character not in allowed_run_id_characters for character in run_id
+    ):
+        raise ValueError("run_id may contain only letters, digits, '-' and '_'.")
+    run_dir = paths.dfl_run_dir(tag, run_id)
+    run_dir.mkdir(parents=True, exist_ok=False)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     # DFL updates use only the training split.  The validation split is fixed
@@ -572,6 +599,7 @@ def train_dfl_stage(
             writer.close()
 
     checkpoint = {
+        "run_id": run_id,
         "method": config.dfl.method,
         "generator": config.generator.kind,
         "support_count": config.dfl.num_support_scenarios,
@@ -600,10 +628,10 @@ def train_dfl_stage(
     }
     checkpoint["fine_tuned_generator_state_dict"] = cvae.state_dict()
     checkpoint["decision_regret"] = float(result.decision_regret)
-    dfl_checkpoint = paths.dfl_checkpoint_for(tag)
+    dfl_checkpoint = run_dir / "checkpoint.pt"
     torch.save(checkpoint, dfl_checkpoint)
     _write_json(
-        paths.dfl_json_for("dfl_history", tag),
+        run_dir / "history.json",
         result.history_as_dicts(),
     )
     payload = {
@@ -627,6 +655,7 @@ def train_dfl_stage(
         "training_validation": result.full_validation_result.to_dict(),
         "best_epoch": int(result.best_epoch),
         "checkpoint": str(dfl_checkpoint),
+        "run_id": run_id,
         "fixed_decision_anchors": config.dfl.fixed_decision_anchors,
         "dfl_statistical_weight": config.dfl.dfl_statistical_weight,
         "gradient_balance_ratio": config.dfl.gradient_balance_ratio,
@@ -634,7 +663,17 @@ def train_dfl_stage(
     }
     payload["perfect_information_reference"] = result.reference_result.to_dict()
     payload["decision_regret"] = float(result.decision_regret)
-    _write_json(paths.dfl_json_for("dfl_result", tag), payload)
+    result_path = run_dir / "result.json"
+    _write_json(result_path, payload)
+    _write_json_atomic(
+        paths.dfl_latest_for(tag),
+        {
+            "run_id": run_id,
+            "checkpoint": str(dfl_checkpoint.resolve()),
+            "history": str((run_dir / "history.json").resolve()),
+            "result": str(result_path.resolve()),
+        },
+    )
     return payload
 
 
@@ -826,6 +865,7 @@ def evaluate_stage(
     carbon_formulation_override: str | None = None,
     carbon_cap_scope_override: str | None = None,
     evaluation_carbon_formulation_override: str | None = None,
+    checkpoint_override: str | Path | None = None,
 ) -> dict:
     config = _apply_generator_override(load_config(config_path), generator_override)
     if carbon_formulation_override is not None:
@@ -880,10 +920,17 @@ def evaluate_stage(
     evaluation_pool = ScenarioPool(evaluation_scenarios)
     device = resolve_device(config.dfl.device)
     cvae = load_generator(paths, config.generator.kind, device)
-    checkpoint_path = paths.dfl_checkpoint_for(tag)
-    # Read old runs when no method-scoped checkpoint has been created yet.
-    if not checkpoint_path.exists() and paths.dfl_checkpoint.exists():
-        checkpoint_path = paths.dfl_checkpoint
+    if checkpoint_override is not None:
+        checkpoint_path = Path(checkpoint_override)
+    else:
+        latest_manifest = paths.dfl_latest_for(tag)
+        if latest_manifest.exists():
+            checkpoint_path = Path(_read_json(latest_manifest)["checkpoint"])
+        else:
+            checkpoint_path = paths.dfl_checkpoint_for(tag)
+            # Read old runs when no method-scoped checkpoint has been created yet.
+            if not checkpoint_path.exists() and paths.dfl_checkpoint.exists():
+                checkpoint_path = paths.dfl_checkpoint
     checkpoint = _load_torch(checkpoint_path, device)
     checkpoint_method = checkpoint.get("method", "recourse_feasibility")
     if checkpoint_method != config.dfl.method:
@@ -1061,6 +1108,8 @@ def evaluate_stage(
     payload = {
         "method": checkpoint.get("method", "recourse_feasibility"),
         "generator": checkpoint_generator,
+        "evaluated_checkpoint": str(checkpoint_path.resolve()),
+        "training_run_id": checkpoint.get("run_id"),
         "device": str(device),
         "test_split": config.data.test_split,
         "test_scenarios_evaluated": len(evaluation_pool.scenarios),

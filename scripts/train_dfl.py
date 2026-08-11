@@ -31,6 +31,14 @@ def main() -> None:
         default=1.0,
         help="scale site, power and energy investment costs together",
     )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help=(
+            "optional unique artifact name; by default a timestamp and process "
+            "ID are used so concurrent runs cannot overwrite one another"
+        ),
+    )
     args = parser.parse_args()
     print(f"Starting DFL training with {args.config}...", flush=True)
     result = train_dfl_stage(
@@ -40,6 +48,7 @@ def main() -> None:
         battery_capex_scale=args.capex_scale,
         carbon_formulation_override=args.carbon_formulation,
         carbon_cap_scope_override=args.carbon_cap_scope,
+        run_id=args.run_id,
     )
     print(f"generator: {result['generator']}")
     print(f"method: {result['method']}")
@@ -61,6 +70,7 @@ def main() -> None:
         f"E={total_energy:.4f} MWh"
     )
     print(f"checkpoint: {result['checkpoint']}")
+    print(f"run id: {result['run_id']}")
 
 
 if __name__ == "__main__":
