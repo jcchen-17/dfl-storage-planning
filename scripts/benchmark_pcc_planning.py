@@ -37,7 +37,7 @@ from storage_dfl.stages import _experiment_data
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--config", default="configs/dataset_v2_dfl_hourly_layered.yaml"
+        "--config", default="configs/dataset_v2_dfl_hourly_layered_t1.yaml"
     )
     parser.add_argument("--split", default="train", choices=("train", "validation", "test"))
     parser.add_argument(

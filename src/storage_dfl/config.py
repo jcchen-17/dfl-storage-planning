@@ -99,9 +99,13 @@ class DFLConfig:
     # carbon excess and finally uses regret as a tie-breaker.
     checkpoint_selection: str = "economic"
     checkpoint_shedding_tolerance: float = 1.0e-4
-    # Direct CVAE fine-tuning with recourse-aware feasibility feedback.  A zero
-    # lambda is an exact no-op after generator pretraining, which defines the
-    # CVAE-only ablation without extra optimization epochs.
+    # Reliable checkpoints within this absolute tCO2/MWh distance of the
+    # lowest validation carbon-excess rate compete on economic regret. Zero
+    # retains strict lexicographic carbon-first selection.
+    checkpoint_carbon_tolerance: float = 0.0
+    # Direct CVAE fine-tuning with recourse-aware feasibility feedback. With
+    # scratch initialization, zero trains only the statistical CVAE objective
+    # for the same epoch budget. After separate pretraining, zero is a no-op.
     lambda_dfl: float = 0.0
     feasibility_load_weight: float = 1.0
     feasibility_pv_weight: float = 1.0

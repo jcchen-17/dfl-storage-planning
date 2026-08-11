@@ -12,6 +12,7 @@ from storage_dfl.data import (
 )
 from storage_dfl.dfl.decision_loss import RecourseFeasibilityLoss
 from storage_dfl.dfl.recourse_trainer import (
+    _validation_checkpoint_is_better,
     _validation_checkpoint_score,
     train_recourse_feasibility_cvae,
 )
@@ -157,6 +158,54 @@ def test_carbon_first_checkpoint_selection_respects_reliability_guardrail() -> N
     assert reliable_low_carbon < unreliable_zero_carbon
 
 
+def test_carbon_tolerance_uses_regret_without_ratcheting() -> None:
+    incumbent = _validation_checkpoint_score(
+        0.020, 0.00005, 0.01200, 0.28,
+        selection="carbon_first", shedding_tolerance=0.0001,
+    )
+    near_candidate = _validation_checkpoint_score(
+        0.015, 0.00005, 0.01204, 0.28,
+        selection="carbon_first", shedding_tolerance=0.0001,
+    )
+    better, floor = _validation_checkpoint_is_better(
+        selection="carbon_first",
+        candidate_score=near_candidate,
+        incumbent_score=incumbent,
+        candidate_shed=0.00005,
+        candidate_carbon=0.01204,
+        candidate_regret=0.015,
+        incumbent_shed=0.00005,
+        incumbent_carbon=0.01200,
+        incumbent_regret=0.020,
+        shedding_tolerance=0.0001,
+        carbon_tolerance=0.00005,
+        reliable_carbon_floor=0.01200,
+    )
+    assert better
+    assert np.isclose(floor, 0.01200)
+
+    outside_candidate = _validation_checkpoint_score(
+        0.001, 0.00005, 0.01206, 0.28,
+        selection="carbon_first", shedding_tolerance=0.0001,
+    )
+    better, floor = _validation_checkpoint_is_better(
+        selection="carbon_first",
+        candidate_score=outside_candidate,
+        incumbent_score=near_candidate,
+        candidate_shed=0.00005,
+        candidate_carbon=0.01206,
+        candidate_regret=0.001,
+        incumbent_shed=0.00005,
+        incumbent_carbon=0.01204,
+        incumbent_regret=0.015,
+        shedding_tolerance=0.0001,
+        carbon_tolerance=0.00005,
+        reliable_carbon_floor=floor,
+    )
+    assert not better
+    assert np.isclose(floor, 0.01200)
+
+
 def test_outage_hours_do_not_create_grid_carbon_gradient() -> None:
     truth = _physical(load=1.0, pv=0.0, carbon=0.7)
     result = _result(carbon=(0.2,), served=2.0)
@@ -209,7 +258,7 @@ def test_opl_pushes_overly_strict_predictions_toward_truth() -> None:
 
 
 def test_feasibility_surrogate_reaches_cvae_decoder() -> None:
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     pool = make_toy_scenarios(feeder, num_scenarios=4, horizon=4, seed=42)
     codec = ScenarioCodec.fit(pool, feeder)
@@ -240,9 +289,9 @@ def test_feasibility_surrogate_reaches_cvae_decoder() -> None:
     )
 
 
-def test_lambda_zero_is_noop_and_final_models_are_true_milps(monkeypatch) -> None:
+def test_lambda_zero_trains_scratch_cvae_without_dfl_and_uses_true_milps(monkeypatch) -> None:
     monkeypatch.setenv("STORAGE_DFL_SOLVER_WORKER", "1")
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     original = make_toy_scenarios(feeder, num_scenarios=4, horizon=4, seed=43)
     scenarios = list(original.scenarios)
@@ -282,8 +331,14 @@ def test_lambda_zero_is_noop_and_final_models_are_true_milps(monkeypatch) -> Non
     result = train_recourse_feasibility_cvae(
         model, codec, pool, oracle, replace(config.cvae, epochs=1), dfl, 7
     )
-    assert result.history == ()
-    assert all(torch.equal(before[name], value) for name, value in model.state_dict().items())
+    assert len(result.history) == 1
+    assert not result.history[0].dfl_evaluated
+    assert result.history[0].effective_lambda_dfl == 0.0
+    assert result.history[0].statistical_loss_weight == 1.0
+    assert any(
+        not torch.equal(before[name], value)
+        for name, value in model.state_dict().items()
+    )
     assert result.planning_result.status in {"optimal", "gaplimit"}
     assert result.full_validation_result.status in {"optimal", "gaplimit"}
     assert any(
@@ -318,7 +373,7 @@ def test_lambda_zero_is_noop_and_final_models_are_true_milps(monkeypatch) -> Non
 
 
 def test_main_config_stabilizes_decision_feedback() -> None:
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
 
     assert config.dfl.fixed_decision_anchors
     assert config.dfl.decision_batch_size == config.dfl.num_support_scenarios
@@ -330,7 +385,7 @@ def test_main_config_stabilizes_decision_feedback() -> None:
 
 def test_recourse_fixes_only_design_and_reoptimizes_operations(monkeypatch) -> None:
     monkeypatch.setenv("STORAGE_DFL_SOLVER_WORKER", "1")
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     pool = make_toy_scenarios(feeder, num_scenarios=4, horizon=4, seed=44)
     planning = replace(
@@ -388,7 +443,7 @@ def test_scenario_cache_identity_uses_contents() -> None:
 
 
 def test_pcc_cache_does_not_round_distinct_designs_or_weights() -> None:
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     pool = make_toy_scenarios(feeder, num_scenarios=4, horizon=4, seed=47)
     oracle = SinglePCCPlanningOracle(
@@ -410,7 +465,7 @@ def test_pcc_cache_does_not_round_distinct_designs_or_weights() -> None:
 
 
 def test_carbon_slack_switch_controls_constraint_semantics() -> None:
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     pool = make_toy_scenarios(feeder, num_scenarios=4, horizon=4, seed=48)
     oracle = SinglePCCPlanningOracle(

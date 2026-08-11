@@ -12,7 +12,7 @@ from storage_dfl.stages import (
 cfg = (
     sys.argv[1]
     if len(sys.argv) > 1
-    else "configs/dataset_v2_dfl_hourly_layered.yaml"
+    else "configs/dataset_v2_dfl_hourly_layered_t1.yaml"
 )
 c = load_config(cfg)
 paths = ArtifactPaths(c.output_dir)

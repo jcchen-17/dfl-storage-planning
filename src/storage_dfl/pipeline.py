@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--config",
-        default="configs/dataset_v2_dfl_hourly_layered.yaml",
+        default="configs/dataset_v2_dfl_hourly_layered_t1.yaml",
         help="YAML configuration path",
     )
     parser.add_argument("--no-tensorboard", action="store_true", help="Disable TensorBoard logging")

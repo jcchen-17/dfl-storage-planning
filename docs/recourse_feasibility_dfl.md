@@ -209,8 +209,11 @@ The relevant `dfl` keys are:
   `gradient_balance_max_scale`;
 - `use_solution_cache`.
 
-Setting `lambda_dfl: 0` performs no post-pretraining update, producing the exact
-CVAE-only ablation. Only `recourse_feasibility` remains as a runtime DFL method.
+With scratch initialization, setting `lambda_dfl: 0` trains the CVAE statistical
+objective for the same epoch budget without any MILP decision feedback or
+decision-based checkpoint selection. With separately pretrained initialization,
+it performs no additional update. This is the CVAE-only/Predict-then-Optimize
+ablation. Only `recourse_feasibility` remains as a runtime DFL method.
 
 ## Known limitations
 

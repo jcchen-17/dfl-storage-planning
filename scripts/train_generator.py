@@ -7,7 +7,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train the current v2 CVAE scenario generator."
     )
-    parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered.yaml")
+    parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     parser.add_argument("--no-tensorboard", action="store_true")
     args = parser.parse_args()
     print(f"Starting generator training with {args.config}...", flush=True)

@@ -5,7 +5,7 @@ from storage_dfl.stages import train_dfl_stage
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train decision-focused scenario supports.")
-    parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered.yaml")
+    parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     parser.add_argument("--no-tensorboard", action="store_true")
     parser.add_argument(
         "--carbon-formulation",

@@ -51,10 +51,9 @@ generator:
   kind: cvae
 
 dfl:
-  # Train one CVAE+DFL model from random weights. The first five epochs are a
-  # short reconstruction warm-up within this run; no cvae.pt weights are read.
+  # Load the 300-epoch CVAE checkpoint, then decision-focus its decoder.
   method: recourse_feasibility
-  initialize_from_pretrained: false
+  initialize_from_pretrained: true
   num_support_scenarios: 8
   epochs: 45
   final_validation_size: 16
@@ -75,7 +74,7 @@ dfl:
   # moderate carbon weight and allow the random CVAE to learn basic trajectories
   # before decision feedback begins.
   feasibility_carbon_weight: 2.0
-  dfl_start_epoch: 10
+  dfl_start_epoch: 0
   dfl_eval_interval: 1
   # Stable-anchor mode uses the final eight supports directly. This value is
   # retained as the fallback batch size when fixed_decision_anchors is false.
@@ -192,4 +191,4 @@ costs:
 
 # New physical scaling invalidates the old normalization and CVAE checkpoint;
 # use a clean artifact namespace so stale feeder-aggregate models cannot load.
-output_dir: outputs/dataset_v2_dfl_single_pcc_dc10mw_pv5mw_hourly_cap
+output_dir: outputs/hourly_layered/t2

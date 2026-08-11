@@ -5,7 +5,7 @@ from storage_dfl.stages import evaluate_stage
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate trained supports in storage planning.")
-    parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered.yaml")
+    parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     parser.add_argument(
         "--carbon-formulation",
         choices=("layered_pcc", "average_pcc"),

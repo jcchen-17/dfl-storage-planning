@@ -16,7 +16,7 @@ from storage_dfl.stages import _experiment_data
 
 
 def test_single_pcc_factory_and_historical_aggregation() -> None:
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder, pool = _experiment_data(config, config.data.train_split)
 
     assert config.data.delta_t_hours == 1.0
@@ -75,7 +75,7 @@ def test_single_pcc_layered_model_solves_small_case(monkeypatch) -> None:
     # Keep the smoke solve in-process. The production pipeline still exercises
     # the isolated worker whenever torch has initialized on Windows.
     monkeypatch.setenv("STORAGE_DFL_SOLVER_WORKER", "1")
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     pool = make_toy_scenarios(feeder, num_scenarios=4, horizon=4, seed=29)
     planning = replace(
@@ -106,7 +106,7 @@ def test_single_pcc_layered_model_solves_small_case(monkeypatch) -> None:
 
 def test_grid_connected_carbon_pressure_cannot_shed_load(monkeypatch) -> None:
     monkeypatch.setenv("STORAGE_DFL_SOLVER_WORKER", "1")
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     base = make_toy_scenarios(feeder, num_scenarios=4, horizon=4, seed=30)
     scenario = replace(
@@ -137,7 +137,7 @@ def test_grid_connected_carbon_pressure_cannot_shed_load(monkeypatch) -> None:
 
 def test_outage_carbon_budget_allows_diesel_reliability(monkeypatch) -> None:
     monkeypatch.setenv("STORAGE_DFL_SOLVER_WORKER", "1")
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     base = make_toy_scenarios(feeder, num_scenarios=4, horizon=4, seed=301)
     scenario = replace(
@@ -168,7 +168,7 @@ def test_outage_carbon_budget_allows_diesel_reliability(monkeypatch) -> None:
 
 
 def test_single_pcc_codec_trains_with_empty_reactive_mask() -> None:
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     pool = make_toy_scenarios(feeder, num_scenarios=8, horizon=4, seed=31)
     codec = ScenarioCodec.fit(pool, feeder)
@@ -197,7 +197,7 @@ def test_single_pcc_codec_trains_with_empty_reactive_mask() -> None:
 
 
 def test_single_pcc_accepts_average_carbon_baseline() -> None:
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     planning = replace(config.planning, carbon_formulation="average_pcc")
     oracle = SinglePCCPlanningOracle(
@@ -208,7 +208,7 @@ def test_single_pcc_accepts_average_carbon_baseline() -> None:
 
 def test_average_carbon_baseline_uses_source_emissions(monkeypatch) -> None:
     monkeypatch.setenv("STORAGE_DFL_SOLVER_WORKER", "1")
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     pool = make_toy_scenarios(feeder, num_scenarios=4, horizon=4, seed=302)
     planning = replace(
@@ -236,7 +236,7 @@ def test_average_carbon_baseline_uses_source_emissions(monkeypatch) -> None:
 
 
 def test_single_pcc_rejects_unknown_carbon_formulation() -> None:
-    config = load_config("configs/dataset_v2_dfl_hourly_layered.yaml")
+    config = load_config("configs/dataset_v2_dfl_hourly_layered_t1.yaml")
     feeder = single_pcc_microgrid()
     planning = replace(config.planning, carbon_formulation="unknown")
     try:

@@ -77,11 +77,13 @@ class ArtifactPaths:
     def dfl_json_for(self, stem: str, method: str) -> Path:
         return self.root / f"{stem}_{method}.json"
 
-    def dfl_run_dir(self, method: str, run_id: str) -> Path:
-        return self.root / "dfl_runs" / method / run_id
+    def dfl_run_dir(self, run_id: str) -> Path:
+        """One self-contained timestamped DFL run."""
+        return self.root / "runs" / run_id
 
-    def dfl_latest_for(self, method: str) -> Path:
-        return self.root / f"dfl_latest_{method}.json"
+    @property
+    def dfl_latest(self) -> Path:
+        return self.root / "latest.json"
 
     @property
     def normalization(self) -> Path:
@@ -103,6 +105,8 @@ def _json_safe(value: Any, path: str, offenders: list[str]) -> Any:
     available" without inventing a number, and the caller reports what was lost.
     """
 
+    if isinstance(value, Path):
+        return str(value)
     if isinstance(value, float):
         if not isfinite(value):
             offenders.append(path or "<root>")
@@ -151,7 +155,13 @@ def _read_json(path: Path) -> Any:
         return json.load(stream)
 
 
-def _summary_writer(path: Path, enabled: bool, config: ExperimentConfig):
+def _summary_writer(
+    path: Path,
+    enabled: bool,
+    config: ExperimentConfig,
+    *,
+    timestamped: bool = True,
+):
     """Open a TensorBoard writer in a directory unique to this run.
 
     TensorBoard treats a directory as one run and merges every event file it
@@ -173,7 +183,8 @@ def _summary_writer(path: Path, enabled: bool, config: ExperimentConfig):
         raise RuntimeError(
             "TensorBoard is not installed. Run `python -m pip install tensorboard`."
         ) from exc
-    writer = SummaryWriter(log_dir=str(path / time.strftime("%Y%m%d-%H%M%S")))
+    log_dir = path / time.strftime("%Y%m%d-%H%M%S") if timestamped else path
+    writer = SummaryWriter(log_dir=str(log_dir))
     writer.add_text("experiment/config", f"```json\n{json.dumps(asdict(config), default=str, indent=2)}\n```")
     return writer
 
@@ -294,6 +305,20 @@ def _load_codec(paths: ArtifactPaths, feeder: Feeder) -> ScenarioCodec:
     return ScenarioCodec.from_normalization_dict(_read_json(paths.normalization), feeder)
 
 
+def _fit_codec(config: ExperimentConfig, pool: ScenarioPool, feeder: Feeder) -> ScenarioCodec:
+    """Fit the shared training-split normalization used by joint training."""
+
+    return ScenarioCodec.fit(
+        pool,
+        feeder,
+        deterministic_price=config.data.deterministic_price,
+        tariff_spread_scale=config.data.tariff_spread_scale,
+        tariff_reference_price_per_mwh=(
+            config.data.tariff_reference_price_per_mwh
+        ),
+    )
+
+
 def _require_current_codec(config: ExperimentConfig, codec: ScenarioCodec) -> None:
     """Reject stale normalization when deterministic tariff restoration is required."""
 
@@ -355,15 +380,7 @@ def train_generator_stage(
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     feeder, observed_pool = _experiment_data(config, config.data.train_split)
-    codec = ScenarioCodec.fit(
-        observed_pool,
-        feeder,
-        deterministic_price=config.data.deterministic_price,
-        tariff_spread_scale=config.data.tariff_spread_scale,
-        tariff_reference_price_per_mwh=(
-            config.data.tariff_reference_price_per_mwh
-        ),
-    )
+    codec = _fit_codec(config, observed_pool, feeder)
     trajectories, contexts = codec.encode_pool(observed_pool)
     # Encoded with the codec fitted on the training split, never one refitted
     # here: the held-out curve has to describe the generator downstream stages
@@ -517,11 +534,10 @@ def train_dfl_stage(
         config = replace(config, dfl=replace(config.dfl, method=method_override))
     if config.dfl.method != "recourse_feasibility":
         raise ValueError("Only dfl.method='recourse_feasibility' is retained.")
-    tag = _method_tag(config)
     paths = ArtifactPaths(config.output_dir)
     paths.root.mkdir(parents=True, exist_ok=True)
     if run_id is None:
-        run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-p{os.getpid()}"
+        run_id = time.strftime("%Y%m%d-%H%M%S")
     allowed_run_id_characters = (
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
     )
@@ -529,8 +545,9 @@ def train_dfl_stage(
         character not in allowed_run_id_characters for character in run_id
     ):
         raise ValueError("run_id may contain only letters, digits, '-' and '_'.")
-    run_dir = paths.dfl_run_dir(tag, run_id)
+    run_dir = paths.dfl_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=False)
+    _write_json(run_dir / "config.json", asdict(config))
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     # DFL updates use only the training split.  The validation split is fixed
@@ -541,7 +558,20 @@ def train_dfl_stage(
     )
     if validation_feeder.buses != feeder.buses:
         raise ValueError("Training and validation splits use different feeders.")
-    codec = _load_codec(paths, feeder)
+    if paths.normalization.exists():
+        codec = _load_codec(paths, feeder)
+    elif config.dfl.initialize_from_pretrained:
+        raise FileNotFoundError(
+            f"Normalization file not found: {paths.normalization}. Pretrained "
+            "initialization requires train_generator.py to run first."
+        )
+    else:
+        codec = _fit_codec(config, observed_pool, feeder)
+        _write_json(paths.normalization, codec.normalization_dict())
+        print(
+            f"Fitted training-split normalization: {paths.normalization}",
+            flush=True,
+        )
     _require_current_codec(config, codec)
     device = resolve_device(config.dfl.device)
     if config.dfl.initialize_from_pretrained:
@@ -552,7 +582,7 @@ def train_dfl_stage(
             config, codec.trajectory_dim, codec.context_dim
         ).to(device)
         print(
-            "DFL initialization: random generator weights; normalization reused",
+            "DFL initialization: random generator weights; joint CVAE-DFL training",
             flush=True,
         )
     # The training loop may run at a looser tolerance than the reported numbers.
@@ -576,8 +606,9 @@ def train_dfl_stage(
     validation_oracle = make_planning_oracle(
         feeder, config.planning, config.costs, config.data, config.data_center
     )
-    tensorboard_name = _compact_run_name("dfl", tag)
-    writer = _summary_writer(paths.tensorboard / tensorboard_name, tensorboard, config)
+    writer = _summary_writer(
+        run_dir / "tensorboard", tensorboard, config, timestamped=False
+    )
     try:
         result = train_recourse_feasibility_cvae(
             cvae,
@@ -625,8 +656,14 @@ def train_dfl_stage(
         "dfl_statistical_weight": config.dfl.dfl_statistical_weight,
         "gradient_balance_ratio": config.dfl.gradient_balance_ratio,
         "gradient_balance_max_scale": config.dfl.gradient_balance_max_scale,
+        "checkpoint_carbon_tolerance": config.dfl.checkpoint_carbon_tolerance,
     }
     checkpoint["fine_tuned_generator_state_dict"] = cvae.state_dict()
+    checkpoint["generator_checkpoint"] = {
+        "kind": cvae.kind,
+        "state_dict": cvae.state_dict(),
+        **cvae.checkpoint_payload(),
+    }
     checkpoint["decision_regret"] = float(result.decision_regret)
     dfl_checkpoint = run_dir / "checkpoint.pt"
     torch.save(checkpoint, dfl_checkpoint)
@@ -660,13 +697,14 @@ def train_dfl_stage(
         "dfl_statistical_weight": config.dfl.dfl_statistical_weight,
         "gradient_balance_ratio": config.dfl.gradient_balance_ratio,
         "gradient_balance_max_scale": config.dfl.gradient_balance_max_scale,
+        "checkpoint_carbon_tolerance": config.dfl.checkpoint_carbon_tolerance,
     }
     payload["perfect_information_reference"] = result.reference_result.to_dict()
     payload["decision_regret"] = float(result.decision_regret)
     result_path = run_dir / "result.json"
     _write_json(result_path, payload)
     _write_json_atomic(
-        paths.dfl_latest_for(tag),
+        paths.dfl_latest,
         {
             "run_id": run_id,
             "checkpoint": str(dfl_checkpoint.resolve()),
@@ -905,7 +943,6 @@ def evaluate_stage(
         if method_override != "recourse_feasibility":
             raise ValueError("Only method_override='recourse_feasibility' is retained.")
         config = replace(config, dfl=replace(config.dfl, method=method_override))
-    tag = _method_tag(config)
     paths = ArtifactPaths(config.output_dir)
     feeder, observed_pool = _experiment_data(config, config.data.test_split)
     codec = _load_codec(paths, feeder)
@@ -919,14 +956,14 @@ def evaluate_stage(
     )
     evaluation_pool = ScenarioPool(evaluation_scenarios)
     device = resolve_device(config.dfl.device)
-    cvae = load_generator(paths, config.generator.kind, device)
     if checkpoint_override is not None:
         checkpoint_path = Path(checkpoint_override)
     else:
-        latest_manifest = paths.dfl_latest_for(tag)
+        latest_manifest = paths.dfl_latest
         if latest_manifest.exists():
             checkpoint_path = Path(_read_json(latest_manifest)["checkpoint"])
         else:
+            tag = _method_tag(config)
             checkpoint_path = paths.dfl_checkpoint_for(tag)
             # Read old runs when no method-scoped checkpoint has been created yet.
             if not checkpoint_path.exists() and paths.dfl_checkpoint.exists():
@@ -950,20 +987,28 @@ def evaluate_stage(
             evaluation_planning,
             carbon_formulation=evaluation_carbon_formulation_override,
         )
-    result_tag = tag
+    evaluation_suffix = ""
     if evaluation_planning.carbon_formulation != config.planning.carbon_formulation:
-        result_tag = (
-            f"{tag}_audit_{evaluation_planning.carbon_formulation}"
-        )
+        evaluation_suffix = f"_{evaluation_planning.carbon_formulation}"
     checkpoint_generator = str(checkpoint.get("generator", "cvae"))
     if checkpoint_generator != config.generator.kind:
         raise RuntimeError(
             f"Requested generator {config.generator.kind!r}, but checkpoint "
             f"{checkpoint_path} was trained with {checkpoint_generator!r}."
         )
-    if "fine_tuned_generator_state_dict" in checkpoint:
+    if "generator_checkpoint" in checkpoint:
+        cvae = generator_from_checkpoint(checkpoint["generator_checkpoint"], device)
+    elif "fine_tuned_generator_state_dict" in checkpoint:
+        # Backward-compatible path for scratch/joint checkpoints written before
+        # constructor metadata was embedded. Rebuild from the effective config
+        # and codec; do not require a separately pretrained cvae.pt.
+        cvae = build_generator(
+            config, codec.trajectory_dim, codec.context_dim
+        ).to(device)
         cvae.load_state_dict(checkpoint["fine_tuned_generator_state_dict"])
         cvae.freeze()
+    else:
+        cvae = load_generator(paths, config.generator.kind, device)
     latent = checkpoint["support_latent"].to(device=device, dtype=torch.float32)
     conditions = checkpoint["support_conditions"].to(device=device, dtype=torch.float32)
     weights = tuple(float(value) for value in checkpoint["scenario_weights"].cpu())
@@ -1159,9 +1204,12 @@ def evaluate_stage(
         ),
         "decision_regret": exact_decision_regret,
     }
-    _write_json(paths.dfl_json_for("result", result_tag), payload)
+    evaluation_dir = checkpoint_path.parent
+    evaluation_name = f"evaluation{evaluation_suffix}.json"
+    trajectory_name = f"trajectories{evaluation_suffix}.csv"
+    _write_json(evaluation_dir / evaluation_name, payload)
     _write_trajectories(
-        paths.root / f"scenario_trajectories_{result_tag}.csv",
+        evaluation_dir / trajectory_name,
         evaluation_pool,
         generated,
         weights,

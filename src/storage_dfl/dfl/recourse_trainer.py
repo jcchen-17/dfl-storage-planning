@@ -128,6 +128,50 @@ def _validation_checkpoint_score(
     )
 
 
+def _validation_checkpoint_is_better(
+    *,
+    selection: str,
+    candidate_score: tuple[float, ...],
+    incumbent_score: tuple[float, ...],
+    candidate_shed: float,
+    candidate_carbon: float,
+    candidate_regret: float,
+    incumbent_shed: float,
+    incumbent_carbon: float,
+    incumbent_regret: float,
+    shedding_tolerance: float,
+    carbon_tolerance: float,
+    reliable_carbon_floor: float,
+) -> tuple[bool, float]:
+    """Compare checkpoints without allowing carbon-tolerance ratcheting."""
+
+    if selection != "carbon_first" or carbon_tolerance <= 0.0:
+        return candidate_score < incumbent_score, reliable_carbon_floor
+
+    candidate_reliable = candidate_shed <= shedding_tolerance
+    incumbent_reliable = incumbent_shed <= shedding_tolerance
+    if candidate_reliable:
+        reliable_carbon_floor = min(reliable_carbon_floor, candidate_carbon)
+
+    if candidate_reliable != incumbent_reliable:
+        return candidate_reliable, reliable_carbon_floor
+    if not candidate_reliable:
+        return candidate_score < incumbent_score, reliable_carbon_floor
+
+    carbon_ceiling = reliable_carbon_floor + carbon_tolerance
+    candidate_eligible = candidate_carbon <= carbon_ceiling
+    incumbent_eligible = incumbent_carbon <= carbon_ceiling
+    if candidate_eligible != incumbent_eligible:
+        return candidate_eligible, reliable_carbon_floor
+    if candidate_eligible:
+        return (
+            (candidate_regret, candidate_carbon)
+            < (incumbent_regret, incumbent_carbon),
+            reliable_carbon_floor,
+        )
+    return candidate_score < incumbent_score, reliable_carbon_floor
+
+
 def _gradient_norm(parameters) -> float:
     squared = 0.0
     for parameter in parameters:
@@ -287,6 +331,8 @@ def train_recourse_feasibility_cvae(
         raise ValueError("gradient balance minimum cannot exceed maximum.")
     if dfl_config.checkpoint_shedding_tolerance < 0.0:
         raise ValueError("checkpoint shedding tolerance must be nonnegative.")
+    if dfl_config.checkpoint_carbon_tolerance < 0.0:
+        raise ValueError("checkpoint carbon tolerance must be nonnegative.")
     if dfl_config.checkpoint_selection not in {"economic", "carbon_first"}:
         raise ValueError(
             "dfl.checkpoint_selection must be 'economic' or 'carbon_first'."
@@ -357,6 +403,7 @@ def train_recourse_feasibility_cvae(
     # optimize a different decision problem from the one ultimately reported.
     fixed_decision_indices_np = support_indices
     fixed_decision_latent = support_latent
+    cvae_only = dfl_config.lambda_dfl == 0.0
     validation_scenarios, validation_weights, _ = select_scenarios(
         dfl_config.evaluation_selection_rule,
         validation_pool,
@@ -364,14 +411,17 @@ def train_recourse_feasibility_cvae(
         min(dfl_config.final_validation_size, len(validation_pool.scenarios)),
         seed=seed + 2718,
     )
-    validation_reference = validation_reference_cache.solve(
-        validation_oracle,
-        validation_scenarios,
-        validation_weights,
-        allow_carbon_slack=True,
-    )
+    validation_reference = None
 
     def evaluate_fixed_checkpoint(prefix: str):
+        nonlocal validation_reference
+        if validation_reference is None:
+            validation_reference = validation_reference_cache.solve(
+                validation_oracle,
+                validation_scenarios,
+                validation_weights,
+                allow_carbon_slack=True,
+            )
         model.eval()
         with torch.no_grad():
             _, generated = _decode_scenarios(
@@ -404,10 +454,9 @@ def train_recourse_feasibility_cvae(
             diagnostics.served_demand_mwh, 1.0e-6
         )
         regret = normalized_decision_regret(evaluated, validation_reference)
-        # Carbon excess and outage shedding are already priced in the recourse
-        # objective. Select by exact validation regret so checkpointing follows
-        # the configured soft-constraint economics; use physical violations
-        # only to break an economic tie.
+        # Rank the fixed validation result under the configured economic or
+        # carbon-first rule. The stateful carbon tolerance is applied later,
+        # when this candidate is compared with the incumbent checkpoint.
         score = _validation_checkpoint_score(
             regret,
             shed_fraction,
@@ -419,22 +468,46 @@ def train_recourse_feasibility_cvae(
         model.train()
         return generated, plan, evaluated, shed_fraction, carbon_rate, regret, score
 
-    initial_eval = evaluate_fixed_checkpoint("recourse_dfl_initial")
     best_state = copy.deepcopy(model.state_dict())
     best_epoch = -1
-    best_score = initial_eval[-1]
-    initialization_label = (
-        "pretrained" if dfl_config.initialize_from_pretrained else "random-initialized"
-    )
-    print(
-        f"Fixed validation baseline ({initialization_label} epoch -1): "
-        f"shed={initial_eval[3]:.3g}, carbon={initial_eval[4]:.3g} t/MWh, "
-        f"regret={initial_eval[5]:.3g}",
-        flush=True,
-    )
+    if cvae_only:
+        # The statistical baseline trains first, then invokes planning once for
+        # its final generated scenarios. No decision result influences training
+        # or checkpoint selection.
+        best_score = (float("inf"),)
+        best_shed = best_carbon = best_regret = float("inf")
+        reliable_carbon_floor = float("inf")
+    else:
+        initial_eval = evaluate_fixed_checkpoint("recourse_dfl_initial")
+        best_score = initial_eval[-1]
+        best_shed = float(initial_eval[3])
+        best_carbon = float(initial_eval[4])
+        best_regret = float(initial_eval[5])
+        reliable_carbon_floor = (
+            best_carbon
+            if best_shed <= dfl_config.checkpoint_shedding_tolerance
+            else float("inf")
+        )
+        initialization_label = (
+            "pretrained"
+            if dfl_config.initialize_from_pretrained
+            else "random-initialized"
+        )
+        print(
+            f"Fixed validation baseline ({initialization_label} epoch -1): "
+            f"shed={initial_eval[3]:.3g}, carbon={initial_eval[4]:.3g} t/MWh, "
+            f"regret={initial_eval[5]:.3g}",
+            flush=True,
+        )
 
-    # lambda=0 remains an exact no-op after pretraining.
-    fine_tune_epochs = dfl_config.epochs if dfl_config.lambda_dfl > 0.0 else 0
+    # With scratch initialization, lambda=0 is the CVAE-only/Predict-then-
+    # Optimize baseline: train the statistical objective for the same epoch
+    # budget, but never request decision feedback. With a separately pretrained
+    # generator it remains the historical exact no-op ablation.
+    fine_tune_epochs = (
+        0 if cvae_only and dfl_config.initialize_from_pretrained
+        else dfl_config.epochs
+    )
     parameters = tuple(model.parameters())
     # Decision feedback reaches the generator through decode().  Balancing it
     # against encoder gradients would compare disjoint parameter subspaces and
@@ -481,7 +554,7 @@ def train_recourse_feasibility_cvae(
         cvae_loss = statistical["loss"]
         statistical_weight = (
             1.0
-            if epoch < dfl_config.dfl_start_epoch
+            if cvae_only or epoch < dfl_config.dfl_start_epoch
             else float(dfl_config.dfl_statistical_weight)
         )
         weighted_statistical_loss = statistical_weight * cvae_loss
@@ -493,7 +566,8 @@ def train_recourse_feasibility_cvae(
         )
         statistical_gradient_norm = _tensor_gradient_norm(statistical_gradients)
         evaluate_dfl = (
-            epoch >= dfl_config.dfl_start_epoch
+            not cvae_only
+            and epoch >= dfl_config.dfl_start_epoch
             and (epoch - dfl_config.dfl_start_epoch) % dfl_config.dfl_eval_interval == 0
         )
         feasibility_loss = torch.zeros((), dtype=cvae_loss.dtype, device=device)
@@ -608,19 +682,46 @@ def train_recourse_feasibility_cvae(
         torch.nn.utils.clip_grad_norm_(parameters, max_norm=10.0)
         optimizer.step()
 
-        validate_now = (epoch % dfl_config.validation_interval == 0) or (
-            epoch == fine_tune_epochs - 1
+        validate_now = not cvae_only and (
+            (epoch % dfl_config.validation_interval == 0)
+            or epoch == fine_tune_epochs - 1
         )
         val_shed = val_carbon = val_regret = val_objective = float("nan")
         is_best = False
+        if cvae_only:
+            # A statistical baseline must not use downstream decision quality
+            # for model selection. Retain the final statistical-training epoch.
+            best_state = copy.deepcopy(model.state_dict())
+            best_epoch = epoch
         if validate_now:
             checkpoint_eval = evaluate_fixed_checkpoint(
                 f"recourse_dfl_validation_e{epoch:03d}"
             )
             _, _, validation_result, val_shed, val_carbon, val_regret, score = checkpoint_eval
             val_objective = float(validation_result.objective)
-            if score < best_score:
+            is_better, reliable_carbon_floor = (
+                _validation_checkpoint_is_better(
+                    selection=dfl_config.checkpoint_selection,
+                    candidate_score=score,
+                    incumbent_score=best_score,
+                    candidate_shed=val_shed,
+                    candidate_carbon=val_carbon,
+                    candidate_regret=val_regret,
+                    incumbent_shed=best_shed,
+                    incumbent_carbon=best_carbon,
+                    incumbent_regret=best_regret,
+                    shedding_tolerance=(
+                        dfl_config.checkpoint_shedding_tolerance
+                    ),
+                    carbon_tolerance=dfl_config.checkpoint_carbon_tolerance,
+                    reliable_carbon_floor=reliable_carbon_floor,
+                )
+            )
+            if is_better:
                 best_score = score
+                best_shed = val_shed
+                best_carbon = val_carbon
+                best_regret = val_regret
                 best_state = copy.deepcopy(model.state_dict())
                 best_epoch = epoch
                 is_best = True
@@ -655,8 +756,9 @@ def train_recourse_feasibility_cvae(
             dfl_evaluated=evaluate_dfl,
         )
         history.append(record)
+        epoch_label = "CVAE-only" if cvae_only else "Recourse DFL"
         print(
-            f"Recourse DFL epoch {epoch + 1}/{fine_tune_epochs}: "
+            f"{epoch_label} epoch {epoch + 1}/{fine_tune_epochs}: "
             f"CVAE={record.cvae_loss:.6g}, IPL={record.infeasibility_penalty_loss:.3g}, "
             f"OPL={record.optimality_preserving_loss:.3g}, "
             f"lambda_eff={record.effective_lambda_dfl:.3g}; "
@@ -677,6 +779,7 @@ def train_recourse_feasibility_cvae(
     # -1), then generate and solve the exact supports that evaluation will use.
     model.load_state_dict(best_state)
     final_eval = evaluate_fixed_checkpoint("recourse_dfl_final")
+    assert validation_reference is not None
     final_scenarios, final_plan, full_validation, _, _, final_regret, _ = final_eval
     model.freeze()
     if writer is not None:
