@@ -8,6 +8,9 @@ Core comparison, sequential:
 Core comparison, two experiments in parallel (recommended):
   python scripts/run_learning_objective_baselines.py --config configs/dataset_v2_dfl_hourly_layered_t4.yaml --parallel-runs 2
 
+Explicit 100-epoch shared pretraining (this is also the default):
+  python scripts/run_learning_objective_baselines.py --config configs/dataset_v2_dfl_hourly_layered_t4.yaml --shared-pretrain-epochs 100 --parallel-runs 2
+
 All learning-objective ablations, at most two in parallel:
   python scripts/run_learning_objective_baselines.py --config configs/dataset_v2_dfl_hourly_layered_t4.yaml --variants all --parallel-runs 2
 
@@ -17,10 +20,11 @@ Selected variants and multiple seeds:
 Training only, without final test-set evaluation:
   python scripts/run_learning_objective_baselines.py --config configs/dataset_v2_dfl_hourly_layered_t4.yaml --parallel-runs 2 --skip-evaluation
 
-For every seed, the script first trains one CVAE for ``cvae.epochs`` complete
-passes over the training split. Every variant for that seed starts from that
-exact checkpoint. ``cvae_only`` performs no DFL updates and proceeds directly
-to planning/evaluation; the remaining variants fine-tune the pretrained CVAE.
+For every seed, the script first trains one CVAE for 100 complete passes over
+the training split. Every variant starts from that exact checkpoint. The
+``cvae_only`` branch resumes the same Adam state and continues to the configured
+``cvae.epochs`` total (300 by default); DFL branches instead begin minibatch
+decision-focused fine-tuning immediately from epoch 100.
 
 The default variants are cvae_only and dfl_full. Parallel jobs run in isolated
 Python processes and write separate console.log files. When --parallel-runs is
@@ -142,6 +146,41 @@ def _run_job(
         train_command.append("--no-tensorboard")
 
     with log_path.open("w", encoding="utf-8") as log:
+        continuation_epochs = int(job.get("cvae_continuation_epochs", 0))
+        if continuation_epochs > 0:
+            continuation_command = [
+                sys.executable,
+                str(project_root / "scripts" / "train_generator.py"),
+                "--config",
+                str(config_path),
+                "--resume-checkpoint",
+                str(Path(record["output_dir"]) / "cvae.pt"),
+                "--additional-epochs",
+                str(continuation_epochs),
+            ]
+            if no_tensorboard:
+                continuation_command.append("--no-tensorboard")
+            log.write(
+                "CVAE CONTINUATION COMMAND\n"
+                + subprocess.list2cmdline(continuation_command)
+                + "\n\n"
+            )
+            log.flush()
+            completed = subprocess.run(
+                continuation_command,
+                cwd=project_root,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+            if completed.returncode != 0:
+                record["status"] = "failed"
+                record["error"] = (
+                    f"CVAE continuation exited with code {completed.returncode}"
+                )
+                record["console_log"] = str(log_path)
+                return record
+
         log.write("TRAIN COMMAND\n" + subprocess.list2cmdline(train_command) + "\n\n")
         log.flush()
         completed = subprocess.run(
@@ -288,6 +327,12 @@ def main() -> None:
         help="number of independent baseline runs to execute concurrently",
     )
     parser.add_argument(
+        "--shared-pretrain-epochs",
+        type=int,
+        default=100,
+        help="full-data CVAE epochs completed before the experiment branches",
+    )
+    parser.add_argument(
         "--solver-workers-per-run",
         type=int,
         default=None,
@@ -309,6 +354,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.parallel_runs <= 0:
         parser.error("--parallel-runs must be positive")
+    if args.shared_pretrain_epochs <= 0:
+        parser.error("--shared-pretrain-epochs must be positive")
     if args.solver_workers_per_run is not None and args.solver_workers_per_run <= 0:
         parser.error("--solver-workers-per-run must be positive")
     if args.solver_threads_per_run is not None and args.solver_threads_per_run <= 0:
@@ -318,6 +365,12 @@ def main() -> None:
     config_path = Path(args.config).resolve()
     with config_path.open("r", encoding="utf-8") as stream:
         base = yaml.safe_load(stream)
+    total_cvae_epochs = int(base["cvae"]["epochs"])
+    if args.shared_pretrain_epochs >= total_cvae_epochs:
+        parser.error(
+            "--shared-pretrain-epochs must be smaller than cvae.epochs "
+            f"({total_cvae_epochs})"
+        )
     # Derived YAMLs live below outputs rather than configs. Freeze inherited
     # filesystem paths before load_config resolves them relative to that YAML.
     base["data"]["dataset_path"] = str(
@@ -347,6 +400,7 @@ def main() -> None:
     for seed in seeds:
         pretrained = yaml.safe_load(yaml.safe_dump(base))
         pretrained["seed"] = int(seed)
+        pretrained["cvae"]["epochs"] = int(args.shared_pretrain_epochs)
         pretrained_dir = (suite_dir / "pretrained" / f"seed_{seed}").resolve()
         pretrained["output_dir"] = str(pretrained_dir)
         pretrained_config = suite_dir / "configs" / f"pretrain_seed_{seed}.yaml"
@@ -400,6 +454,11 @@ def main() -> None:
                     "record": record,
                     "config": str(config_out),
                     "log": str(suite_dir / "logs" / f"{variant}_seed_{seed}.log"),
+                    "cvae_continuation_epochs": (
+                        total_cvae_epochs - args.shared_pretrain_epochs
+                        if variant == "cvae_only"
+                        else 0
+                    ),
                 }
             )
 
@@ -409,6 +468,8 @@ def main() -> None:
         "variants": variants,
         "seeds": seeds,
         "parallel_runs": args.parallel_runs,
+        "shared_pretrain_epochs": args.shared_pretrain_epochs,
+        "cvae_only_total_epochs": total_cvae_epochs,
         "solver_workers_per_run": workers_per_run,
         "solver_threads_per_run": threads_per_run,
         "pretraining": pretraining_records,
@@ -417,7 +478,8 @@ def main() -> None:
     _write_summary(summary_path, summary)
     print(
         f"Pretraining {len(pretraining_jobs)} shared CVAE checkpoint(s), "
-        f"{args.parallel_runs} at a time; cvae.epochs={base['cvae']['epochs']}",
+        f"{args.parallel_runs} at a time; "
+        f"shared_pretrain_epochs={args.shared_pretrain_epochs}",
         flush=True,
     )
     pretraining_by_seed: dict[int, dict] = {}

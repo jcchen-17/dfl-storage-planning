@@ -372,15 +372,27 @@ def train_generator_stage(
     *,
     tensorboard: bool = True,
     generator_override: str | None = None,
+    resume_checkpoint: str | Path | None = None,
+    additional_epochs: int | None = None,
 ) -> dict:
     config = _apply_generator_override(load_config(config_path), generator_override)
+    if additional_epochs is not None:
+        if additional_epochs <= 0:
+            raise ValueError("additional_epochs must be positive.")
+        config = replace(
+            config, cvae=replace(config.cvae, epochs=int(additional_epochs))
+        )
     kind = config.generator.kind
     paths = ArtifactPaths(config.output_dir)
     paths.root.mkdir(parents=True, exist_ok=True)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     feeder, observed_pool = _experiment_data(config, config.data.train_split)
-    codec = _fit_codec(config, observed_pool, feeder)
+    codec = (
+        _load_codec(paths, feeder)
+        if resume_checkpoint is not None and paths.normalization.exists()
+        else _fit_codec(config, observed_pool, feeder)
+    )
     trajectories, contexts = codec.encode_pool(observed_pool)
     # Encoded with the codec fitted on the training split, never one refitted
     # here: the held-out curve has to describe the generator downstream stages
@@ -388,8 +400,35 @@ def train_generator_stage(
     _, validation_pool = _experiment_data(config, config.data.validation_split)
     validation_trajectories, validation_contexts = codec.encode_pool(validation_pool)
     device = resolve_device(config.dfl.device)
-    model = build_generator(config, codec.trajectory_dim, codec.context_dim)
+    start_epoch = 0
+    optimizer_state = None
+    torch_rng_state = None
+    cuda_rng_state_all = None
+    if resume_checkpoint is None:
+        model = build_generator(config, codec.trajectory_dim, codec.context_dim)
+    else:
+        checkpoint = _load_torch(Path(resume_checkpoint), device)
+        model = generator_from_checkpoint(checkpoint, device)
+        if model.kind != kind:
+            raise RuntimeError(
+                f"Resume checkpoint contains {model.kind!r}, expected {kind!r}."
+            )
+        start_epoch = int(checkpoint.get("completed_epochs", 0))
+        optimizer_state = checkpoint.get("optimizer_state_dict")
+        if optimizer_state is None:
+            raise ValueError(
+                "Resume checkpoint has no optimizer_state_dict; retrain the shared "
+                "pretraining stage with the current code."
+            )
+        torch_rng_state = checkpoint.get("torch_rng_state")
+        cuda_rng_state_all = checkpoint.get("cuda_rng_state_all")
+        print(
+            f"Resuming {kind} from epoch {start_epoch} for "
+            f"{config.cvae.epochs} additional epochs.",
+            flush=True,
+        )
     writer = _summary_writer(paths.tensorboard / kind, tensorboard, config)
+    training_state: dict = {}
     try:
         history = train_generator(
             model,
@@ -403,13 +442,18 @@ def train_generator_stage(
             writer=writer,
             validation_trajectories=validation_trajectories,
             validation_contexts=validation_contexts,
+            start_epoch=start_epoch,
+            optimizer_state=optimizer_state,
+            torch_rng_state=torch_rng_state,
+            cuda_rng_state_all=cuda_rng_state_all,
+            training_state_out=training_state,
         )
     finally:
         if writer is not None:
             writer.close()
 
     checkpoint_path = paths.generator_checkpoint_for(kind)
-    save_generator(model, checkpoint_path)
+    save_generator(model, checkpoint_path, training_state=training_state)
     # Every generator shares one normalization, so the codec stays interchangeable
     # and generated scenarios from different models remain directly comparable.
     _write_json(paths.normalization, codec.normalization_dict())
@@ -428,6 +472,8 @@ def train_generator_stage(
         "trajectory_dim": codec.trajectory_dim,
         "latent_dim": model.latent_dim,
         "epochs": len(history),
+        "start_epoch": start_epoch,
+        "completed_epochs": int(training_state["completed_epochs"]),
         "initial_loss": history[0].loss,
         "final_loss": history[-1].loss,
         "final_metrics": asdict(history[-1]),

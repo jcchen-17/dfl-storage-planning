@@ -179,6 +179,7 @@ def test_single_pcc_codec_trains_with_empty_reactive_mask() -> None:
         latent_dim=2,
         hidden_dim=8,
     )
+    training_state: dict = {}
     history = train_cvae(
         model,
         trajectories,
@@ -190,10 +191,32 @@ def test_single_pcc_codec_trains_with_empty_reactive_mask() -> None:
         trajectory_mean=codec.trajectory_mean,
         trajectory_std=codec.trajectory_std,
         field_masks=codec.field_masks(),
+        training_state_out=training_state,
     )
 
     assert len(history) == 1
     assert np.isfinite(history[0].loss)
+    assert training_state["completed_epochs"] == 1
+    assert "optimizer_state_dict" in training_state
+
+    resumed_state: dict = {}
+    resumed = train_cvae(
+        model,
+        trajectories,
+        contexts,
+        replace(config.cvae, epochs=1, batch_size=4),
+        horizon=4,
+        device=torch.device("cpu"),
+        seed=3,
+        trajectory_mean=codec.trajectory_mean,
+        trajectory_std=codec.trajectory_std,
+        field_masks=codec.field_masks(),
+        start_epoch=1,
+        optimizer_state=training_state["optimizer_state_dict"],
+        training_state_out=resumed_state,
+    )
+    assert resumed[0].epoch == 1
+    assert resumed_state["completed_epochs"] == 2
 
 
 def test_single_pcc_accepts_average_carbon_baseline() -> None:

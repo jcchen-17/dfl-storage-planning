@@ -231,11 +231,23 @@ def train_cvae(
     writer: Any | None = None,
     validation_trajectories: np.ndarray | None = None,
     validation_contexts: np.ndarray | None = None,
+    start_epoch: int = 0,
+    optimizer_state: dict | None = None,
+    torch_rng_state: torch.Tensor | None = None,
+    cuda_rng_state_all: list[torch.Tensor] | None = None,
+    training_state_out: dict | None = None,
 ) -> tuple[GeneratorEpoch, ...]:
     """Pretrain the temporal-spatial manifold before decision-focused learning."""
 
     torch.manual_seed(seed)
     model.to(device)
+    model.train()
+    for parameter in model.parameters():
+        parameter.requires_grad_(True)
+    if torch_rng_state is not None:
+        torch.set_rng_state(torch_rng_state.cpu())
+    if cuda_rng_state_all is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all([state.cpu() for state in cuda_rng_state_all])
     x = torch.as_tensor(trajectories, dtype=torch.float32, device=device)
     c = torch.as_tensor(contexts, dtype=torch.float32, device=device)
     layout = TrajectoryLayout.build(
@@ -267,10 +279,14 @@ def train_cvae(
     )
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+    if optimizer_state is not None:
+        optimizer.load_state_dict(optimizer_state)
     history: list[GeneratorEpoch] = []
     field_weights = config.field_weights()
 
-    for epoch in range(config.epochs):
+    total_epochs = start_epoch + config.epochs
+    for local_epoch in range(config.epochs):
+        epoch = start_epoch + local_epoch
         totals = {name: 0.0 for name in COMPONENT_NAMES}
         effective_beta = config.beta * min(
             1.0,
@@ -315,7 +331,7 @@ def train_cvae(
         history.append(
             GeneratorEpoch(epoch=epoch, loss=totals["loss"], metrics=dict(totals))
         )
-        if epoch == 0 or epoch + 1 == config.epochs or (epoch + 1) % 10 == 0:
+        if epoch == 0 or epoch + 1 == total_epochs or (epoch + 1) % 10 == 0:
             held_out = (
                 f", val_loss={totals['validation_loss']:.6f}"
                 f", val_carbon_spread={totals['validation_carbon_spread']:.6f}"
@@ -323,7 +339,7 @@ def train_cvae(
                 else ""
             )
             print(
-                f"CVAE epoch {epoch + 1}/{config.epochs}: "
+                f"CVAE epoch {epoch + 1}/{total_epochs}: "
                 f"loss={totals['loss']:.6f}, "
                 f"reconstruction={totals['reconstruction']:.6f}, "
                 f"net_peak={totals['net_peak']:.6f}, "
@@ -339,6 +355,12 @@ def train_cvae(
                 writer.flush()
 
     model.freeze()
+    if training_state_out is not None:
+        training_state_out["optimizer_state_dict"] = optimizer.state_dict()
+        training_state_out["completed_epochs"] = total_epochs
+        training_state_out["torch_rng_state"] = torch.get_rng_state()
+        if torch.cuda.is_available():
+            training_state_out["cuda_rng_state_all"] = torch.cuda.get_rng_state_all()
     if writer is not None:
         writer.flush()
     return tuple(history)

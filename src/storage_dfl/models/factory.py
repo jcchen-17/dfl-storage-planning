@@ -47,6 +47,11 @@ def train_generator(
     writer: Any | None = None,
     validation_trajectories: np.ndarray | None = None,
     validation_contexts: np.ndarray | None = None,
+    start_epoch: int = 0,
+    optimizer_state: dict | None = None,
+    torch_rng_state: torch.Tensor | None = None,
+    cuda_rng_state_all: list[torch.Tensor] | None = None,
+    training_state_out: dict | None = None,
 ) -> tuple[GeneratorEpoch, ...]:
     shared = dict(
         trajectories=trajectories,
@@ -59,6 +64,11 @@ def train_generator(
         trajectory_std=trajectory_std,
         field_masks=field_masks,
         writer=writer,
+        start_epoch=start_epoch,
+        optimizer_state=optimizer_state,
+        torch_rng_state=torch_rng_state,
+        cuda_rng_state_all=cuda_rng_state_all,
+        training_state_out=training_state_out,
     )
     if not isinstance(model, ConditionalVAE):
         raise TypeError(f"Unsupported generator type: {type(model).__name__}")
@@ -70,13 +80,19 @@ def train_generator(
     )
 
 
-def save_generator(model: ConditionalGenerator, path: Path) -> None:
+def save_generator(
+    model: ConditionalGenerator,
+    path: Path,
+    *,
+    training_state: dict | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "kind": model.kind,
             "state_dict": model.state_dict(),
             **model.checkpoint_payload(),
+            **(training_state or {}),
         },
         path,
     )

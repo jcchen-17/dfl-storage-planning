@@ -51,7 +51,7 @@ generator:
   kind: cvae
 
 dfl:
-  # Load the 300-epoch CVAE checkpoint, then decision-focus its decoder.
+  # Load a separately pretrained CVAE checkpoint, then decision-focus it.
   method: recourse_feasibility
   initialize_from_pretrained: true
   num_support_scenarios: 8
