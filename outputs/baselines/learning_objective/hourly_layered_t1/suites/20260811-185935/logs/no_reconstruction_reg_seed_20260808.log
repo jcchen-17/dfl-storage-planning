@@ -1,0 +1,91 @@
+TRAIN COMMAND
+D:\APPs\Anaconda\envs\storage-dfl\python.exe E:\Vscode\ESS_planning\dfl-storage-planning-local\scripts\train_dfl.py --config E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260811-185935\configs\no_reconstruction_reg_seed_20260808.yaml
+
+Starting DFL training with E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260811-185935\configs\no_reconstruction_reg_seed_20260808.yaml...
+Fitted training-split normalization: E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\no_reconstruction_reg\seed_20260808\normalization.json
+DFL initialization: random generator weights; joint CVAE-DFL training
+training solves at relative gap 0.01; evaluation stays at 0.001
+Fixed validation baseline (random-initialized epoch -1): shed=7.93e-05, carbon=0.0125 t/MWh, regret=0.0205
+Recourse DFL epoch 1/45: CVAE=2.8916, IPL=0, OPL=0, lambda_eff=1; train_shed=0, train_regret=nan; fixed_val_shed=7.97e-05, fixed_val_carbon=0.0125, fixed_val_regret=0.0231 [best]
+Recourse DFL epoch 2/45: CVAE=2.56427, IPL=0, OPL=0, lambda_eff=1; train_shed=0, train_regret=nan; fixed_val_shed=7.94e-05, fixed_val_carbon=0.0125, fixed_val_regret=0.0203 [best]
+Recourse DFL epoch 3/45: CVAE=1.88258, IPL=0, OPL=0, lambda_eff=1; train_shed=0, train_regret=nan; fixed_val_shed=7.91e-05, fixed_val_carbon=0.0124, fixed_val_regret=0.0201 [best]
+Recourse DFL epoch 4/45: CVAE=1.8592, IPL=0, OPL=0, lambda_eff=1; train_shed=0, train_regret=nan; fixed_val_shed=7.9e-05, fixed_val_carbon=0.0124, fixed_val_regret=0.0196 [best]
+Recourse DFL epoch 5/45: CVAE=1.67861, IPL=0, OPL=0, lambda_eff=1; train_shed=0, train_regret=nan; fixed_val_shed=7.91e-05, fixed_val_carbon=0.0124, fixed_val_regret=0.0193 [best]
+Recourse DFL epoch 6/45: CVAE=1.58754, IPL=0, OPL=0, lambda_eff=1; train_shed=0, train_regret=nan; fixed_val_shed=7.92e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.0224 [best]
+Recourse DFL epoch 7/45: CVAE=1.34811, IPL=0, OPL=0, lambda_eff=1; train_shed=0, train_regret=nan; fixed_val_shed=7.98e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0193
+Recourse DFL epoch 8/45: CVAE=1.78615, IPL=0, OPL=0, lambda_eff=1; train_shed=0, train_regret=nan; fixed_val_shed=7.99e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.0226 [best]
+Recourse DFL epoch 9/45: CVAE=1.68455, IPL=0, OPL=0, lambda_eff=1; train_shed=0, train_regret=nan; fixed_val_shed=7.81e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.0191 [best]
+Recourse DFL epoch 10/45: CVAE=1.57955, IPL=0, OPL=0, lambda_eff=1; train_shed=0, train_regret=nan; fixed_val_shed=7.64e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.022 [best]
+Recourse DFL epoch 11/45: CVAE=1.05082, IPL=0.00368, OPL=9.52e-05, lambda_eff=1; train_shed=4.61e-05, train_regret=0.0182; fixed_val_shed=7.49e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.0217
+Recourse DFL epoch 12/45: CVAE=1.42381, IPL=0.00382, OPL=8.66e-05, lambda_eff=1; train_shed=5.16e-05, train_regret=0.0175; fixed_val_shed=7.36e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.0216
+Recourse DFL epoch 13/45: CVAE=1.35746, IPL=0.0038, OPL=8.78e-05, lambda_eff=1; train_shed=5.05e-05, train_regret=0.0183; fixed_val_shed=7.24e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.0182
+Recourse DFL epoch 14/45: CVAE=1.17301, IPL=0.0037, OPL=0.000106, lambda_eff=1; train_shed=4.54e-05, train_regret=0.0194; fixed_val_shed=7.13e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.018
+Recourse DFL epoch 15/45: CVAE=1.55742, IPL=0.00369, OPL=0.000135, lambda_eff=1; train_shed=4.48e-05, train_regret=0.018; fixed_val_shed=8.21e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0196
+Recourse DFL epoch 16/45: CVAE=1.02284, IPL=0.0038, OPL=0.00014, lambda_eff=1; train_shed=5.19e-05, train_regret=0.0181; fixed_val_shed=8.23e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.0229
+Recourse DFL epoch 17/45: CVAE=1.05757, IPL=0.00368, OPL=9.25e-05, lambda_eff=1; train_shed=4.59e-05, train_regret=0.0189; fixed_val_shed=8.25e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.0197
+Recourse DFL epoch 18/45: CVAE=1.31193, IPL=0.00382, OPL=9.13e-05, lambda_eff=1; train_shed=5.03e-05, train_regret=0.0169; fixed_val_shed=8.29e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0223
+Recourse DFL epoch 19/45: CVAE=1.16499, IPL=0.00368, OPL=0.000143, lambda_eff=1; train_shed=4.64e-05, train_regret=0.0171; fixed_val_shed=8.31e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0197
+Recourse DFL epoch 20/45: CVAE=1.11501, IPL=0.00367, OPL=9.12e-05, lambda_eff=1; train_shed=4.65e-05, train_regret=0.0189; fixed_val_shed=8.3e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0197
+Recourse DFL epoch 21/45: CVAE=1.27226, IPL=0.00368, OPL=9.17e-05, lambda_eff=1; train_shed=4.61e-05, train_regret=0.0205; fixed_val_shed=8.33e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.0229
+Recourse DFL epoch 22/45: CVAE=1.51585, IPL=0.00369, OPL=9.44e-05, lambda_eff=1; train_shed=4.14e-05, train_regret=0.0182; fixed_val_shed=8.34e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0197
+Recourse DFL epoch 23/45: CVAE=1.38808, IPL=0.00371, OPL=0.000112, lambda_eff=1; train_shed=4.64e-05, train_regret=0.0178; fixed_val_shed=8.35e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.02
+Recourse DFL epoch 24/45: CVAE=1.24202, IPL=0.00367, OPL=0.000119, lambda_eff=1; train_shed=4.67e-05, train_regret=0.0149; fixed_val_shed=8.37e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.02
+Recourse DFL epoch 25/45: CVAE=1.428, IPL=0.00371, OPL=0.00011, lambda_eff=1; train_shed=4.67e-05, train_regret=0.02; fixed_val_shed=8.38e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.0198
+Recourse DFL epoch 26/45: CVAE=1.24495, IPL=0.00374, OPL=0.000115, lambda_eff=1; train_shed=5.05e-05, train_regret=0.0176; fixed_val_shed=8.39e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0199
+Recourse DFL epoch 27/45: CVAE=1.60475, IPL=0.00367, OPL=0.000113, lambda_eff=1; train_shed=4.65e-05, train_regret=0.0148; fixed_val_shed=8.4e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.02
+Recourse DFL epoch 28/45: CVAE=1.32319, IPL=0.00369, OPL=0.000105, lambda_eff=1; train_shed=4.67e-05, train_regret=0.0196; fixed_val_shed=8.41e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0201
+Recourse DFL epoch 29/45: CVAE=1.52483, IPL=0.00366, OPL=0.000107, lambda_eff=1; train_shed=4.67e-05, train_regret=0.017; fixed_val_shed=8.41e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0198
+Recourse DFL epoch 30/45: CVAE=1.32393, IPL=0.00375, OPL=0.00012, lambda_eff=1; train_shed=5.09e-05, train_regret=0.0169; fixed_val_shed=8.43e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0199
+Recourse DFL epoch 31/45: CVAE=1.14862, IPL=0.00365, OPL=0.000108, lambda_eff=1; train_shed=4.68e-05, train_regret=0.0163; fixed_val_shed=8.44e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0199
+Recourse DFL epoch 32/45: CVAE=1.11199, IPL=0.00365, OPL=0.000115, lambda_eff=1; train_shed=4.68e-05, train_regret=0.0168; fixed_val_shed=8.44e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.02
+Recourse DFL epoch 33/45: CVAE=1.38974, IPL=0.00366, OPL=0.000108, lambda_eff=1; train_shed=4.68e-05, train_regret=0.019; fixed_val_shed=8.44e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.0201
+Recourse DFL epoch 34/45: CVAE=1.16943, IPL=0.00367, OPL=0.000117, lambda_eff=1; train_shed=4.68e-05, train_regret=0.0151; fixed_val_shed=8.45e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0201
+Recourse DFL epoch 35/45: CVAE=1.38797, IPL=0.00357, OPL=0.000119, lambda_eff=1; train_shed=4.01e-05, train_regret=0.0142; fixed_val_shed=8.46e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.02
+Recourse DFL epoch 36/45: CVAE=1.54902, IPL=0.00356, OPL=0.000109, lambda_eff=1; train_shed=3.91e-05, train_regret=0.0143; fixed_val_shed=8.46e-05, fixed_val_carbon=0.0122, fixed_val_regret=0.02
+Recourse DFL epoch 37/45: CVAE=1.55204, IPL=0.00367, OPL=0.000109, lambda_eff=1; train_shed=4.68e-05, train_regret=0.0179; fixed_val_shed=8.47e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.023
+Recourse DFL epoch 38/45: CVAE=1.59088, IPL=0.00372, OPL=0.000116, lambda_eff=1; train_shed=5.06e-05, train_regret=0.0198; fixed_val_shed=8.47e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0201
+Recourse DFL epoch 39/45: CVAE=1.15348, IPL=0.00365, OPL=0.000149, lambda_eff=1; train_shed=4.69e-05, train_regret=0.0192; fixed_val_shed=8.47e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0232
+Recourse DFL epoch 40/45: CVAE=1.36988, IPL=0.00365, OPL=0.000112, lambda_eff=1; train_shed=4.67e-05, train_regret=0.017; fixed_val_shed=8.47e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0201
+Recourse DFL epoch 41/45: CVAE=1.42603, IPL=0.00365, OPL=0.000125, lambda_eff=1; train_shed=4.69e-05, train_regret=0.0175; fixed_val_shed=8.48e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0225
+Recourse DFL epoch 42/45: CVAE=1.70883, IPL=0.00366, OPL=0.000115, lambda_eff=1; train_shed=4.69e-05, train_regret=0.0193; fixed_val_shed=8.48e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.02
+Recourse DFL epoch 43/45: CVAE=1.64649, IPL=0.0035, OPL=0.000108, lambda_eff=1; train_shed=3.9e-05, train_regret=0.015; fixed_val_shed=8.48e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0233
+Recourse DFL epoch 44/45: CVAE=1.40128, IPL=0.00369, OPL=0.000124, lambda_eff=1; train_shed=4.69e-05, train_regret=0.0182; fixed_val_shed=8.48e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0201
+Recourse DFL epoch 45/45: CVAE=1.32674, IPL=0.00361, OPL=0.000124, lambda_eff=1; train_shed=4.43e-05, train_regret=0.0169; fixed_val_shed=8.49e-05, fixed_val_carbon=0.0123, fixed_val_regret=0.0199
+WARNING: history.json contains 40 non-finite value(s), written as null: [0].decision_regret, [0].planning_objective, [0].recourse_objective, [0].reference_objective, [1].decision_regret, [1].planning_objective, [1].recourse_objective, [1].reference_objective, [2].decision_regret, [2].planning_objective, [2].recourse_objective, [2].reference_objective, [3].decision_regret, [3].planning_objective, [3].recourse_objective, [3].reference_objective, [4].decision_regret, [4].planning_objective, [4].recourse_objective, [4].reference_objective, [5].decision_regret, [5].planning_objective, [5].recourse_objective, [5].reference_objective, [6].decision_regret, [6].planning_objective, [6].recourse_objective, [6].reference_objective, [7].decision_regret, [7].planning_objective, [7].recourse_objective, [7].reference_objective, [8].decision_regret, [8].planning_objective, [8].recourse_objective, [8].reference_objective, [9].decision_regret, [9].planning_objective, [9].recourse_objective, [9].reference_objective. A non-finite relative_gap means the solve stopped without proving a bound -- check the status field, and if it is 'memlimit' raise solver_memory_limit_mb or shrink the scenario set.
+generator: cvae
+method: recourse_feasibility
+device: cuda
+epochs: 45
+scenario weights: [0.19858040459298443, 0.0023659923450259565, 0.0023659923450259565, 0.19858040459298443, 0.19858040459298443, 0.19858040459298443, 0.0023659923450259565, 0.19858040459298443]
+final design: installed=['PCC'], P=1.2255 MW, E=5.4360 MWh
+checkpoint: E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\no_reconstruction_reg\seed_20260808\runs\20260811-221458\checkpoint.pt
+run id: 20260811-221458
+
+EVALUATION COMMAND
+D:\APPs\Anaconda\envs\storage-dfl\python.exe E:\Vscode\ESS_planning\dfl-storage-planning-local\scripts\evaluate.py --config E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260811-185935\configs\no_reconstruction_reg_seed_20260808.yaml --checkpoint E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\no_reconstruction_reg\seed_20260808\runs\20260811-221458\checkpoint.pt
+
+Starting evaluation with E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260811-185935\configs\no_reconstruction_reg_seed_20260808.yaml...
+Out-of-sample evaluation: solving 16 scenarios separately...
+No-storage reference: solving 16 scenarios separately...
+Perfect-information reference: solving the true scenario MILP...
+generator: cvae
+method: recourse_feasibility
+evaluated checkpoint: E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\no_reconstruction_reg\seed_20260808\runs\20260811-221458\checkpoint.pt
+training run id: 20260811-221458
+trained carbon formulation: layered_pcc
+evaluation carbon formulation: layered_pcc
+evaluated design source: selected_training_design
+installed buses: ['PCC']
+power MW: {'PCC': 1.2254777130491172}
+energy MWh: {'PCC': 5.436019753103419}
+planning objective: 5232792.14
+validation objective: 5806336.26
+no-storage reference: 6016801.86
+storage value: 210465.59
+normalized decision regret: 0.024373
+load shedding MWh: 3.913236
+carbon excess tCO2: 825.420906
+PV curtailment MWh: 0.000000
+served demand MWh: 74474.099548
+recourse operating cost: 5310337.15
+recourse total planning cost: 5806336.26

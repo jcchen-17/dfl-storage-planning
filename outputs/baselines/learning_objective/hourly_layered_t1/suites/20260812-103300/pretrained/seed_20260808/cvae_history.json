@@ -1,0 +1,33 @@
+[
+  {
+    "epoch": 0,
+    "loss": 2.2367756995525987,
+    "metrics": {
+      "loss": 2.2367756995525987,
+      "reconstruction": 0.722479678772308,
+      "ramp": 0.08594074157568124,
+      "kl": 0.04479680957456866,
+      "net_load": 0.27607821009971284,
+      "net_peak": 0.024095572654035065,
+      "price_spread": 1.982789702467866,
+      "carbon_spread": 2.8913121223449707,
+      "beta": 0.00025,
+      "train_eval_loss": 1.8551293493627192,
+      "train_eval_reconstruction": 0.7016472724767832,
+      "train_eval_ramp": 0.08066546397058519,
+      "train_eval_kl": 0.0874037538747211,
+      "train_eval_net_load": 0.27429934320869026,
+      "train_eval_net_peak": 0.023135981399688747,
+      "train_eval_price_spread": 2.0163284631875844,
+      "train_eval_carbon_spread": 2.1718131945683408,
+      "validation_loss": 1.5009700243289654,
+      "validation_reconstruction": 0.6846680221976814,
+      "validation_ramp": 0.07810365867156249,
+      "validation_kl": 0.06649283598085026,
+      "validation_net_load": 0.2669800490468413,
+      "validation_net_peak": 0.019492504473489065,
+      "validation_price_spread": 2.018096068403223,
+      "validation_carbon_spread": 1.5023609321196
+    }
+  }
+]

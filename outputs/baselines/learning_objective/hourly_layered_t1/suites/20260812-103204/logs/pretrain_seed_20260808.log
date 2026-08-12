@@ -1,0 +1,16 @@
+PRETRAIN COMMAND
+D:\APPs\Anaconda\envs\storage-dfl\python.exe E:\Vscode\ESS_planning\dfl-storage-planning-local\scripts\train_generator.py --config E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103204\configs\pretrain_seed_20260808.yaml
+
+Starting generator training with E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103204\configs\pretrain_seed_20260808.yaml...
+CVAE epoch 1/50: loss=2.236776, reconstruction=0.722480, net_peak=0.024096, price_spread=1.982790, carbon_spread=2.891312, beta=0.00025, val_loss=1.500970, val_carbon_spread=1.502361
+CVAE epoch 10/50: loss=0.850405, reconstruction=0.401114, net_peak=0.006501, price_spread=1.915792, carbon_spread=0.772104, beta=0.0025, val_loss=1.062470, val_carbon_spread=1.049311
+CVAE epoch 20/50: loss=0.445408, reconstruction=0.242804, net_peak=0.006062, price_spread=1.729607, carbon_spread=0.305896, beta=0.005, val_loss=0.830660, val_carbon_spread=1.030724
+CVAE epoch 30/50: loss=0.315645, reconstruction=0.171875, net_peak=0.004317, price_spread=1.690642, carbon_spread=0.195235, beta=0.0075, val_loss=0.781059, val_carbon_spread=1.062354
+CVAE epoch 40/50: loss=0.216442, reconstruction=0.134801, net_peak=0.003079, price_spread=1.662156, carbon_spread=0.069312, beta=0.01, val_loss=0.666555, val_carbon_spread=0.928363
+CVAE epoch 50/50: loss=0.212318, reconstruction=0.125256, net_peak=0.002612, price_spread=1.700559, carbon_spread=0.094311, beta=0.01, val_loss=0.630879, val_carbon_spread=0.894987
+generator: cvae
+device: cuda
+epochs: 50
+latent dim: 16
+loss: 2.236776 -> 0.212318
+checkpoint: E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103204\pretrained\seed_20260808\cvae.pt

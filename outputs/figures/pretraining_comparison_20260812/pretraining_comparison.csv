@@ -1,0 +1,9 @@
+method,oos_cost_musd,regret_pct,storage_value_kusd,load_shedding_mwh,carbon_excess_t,power_mw,energy_mwh,status,relative_gap_pct,source
+"DFL
+(pretrain 1)",5.753716194943276,1.5089172812663274,263.08566013829596,0.009044453586476809,634.9304128298019,2.407168357749432,14.152323308295648,optimal,0.09922347325756949,E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\dfl_full\seed_20260808\runs\20260812-103308\evaluation.json
+"DFL
+(pretrain 50)",5.754533561707479,1.5233375294059401,262.2682933740923,0.0,644.2850374595275,2.4742277707788944,13.291738601627632,optimal,0.09964769014293023,E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\dfl_full\seed_20260808\runs\20260812-103232\evaluation.json
+"DFL
+(pretrain 100)",5.754540518615739,1.5269880829051485,262.26133646583185,0.0,644.902086035705,2.5259381979703903,13.208677318780301,optimal,0.09835048569754964,E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\dfl_full\seed_20260808\runs\20260811-220210\evaluation.json
+"CVAE-only
+(300 total)",5.803638438356188,2.3896616046567325,213.16341672538314,1.3507227300884257,719.0614795272679,1.7873868296311055,8.490087440747752,optimal,0.09949429325139031,E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\cvae_only\seed_20260808\runs\20260811-220332\evaluation.json

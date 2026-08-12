@@ -1,0 +1,20 @@
+{
+  "suite_id": "20260811-185505",
+  "base_config": "E:\\Vscode\\ESS_planning\\dfl-storage-planning-local\\configs\\dataset_v2_dfl_hourly_layered_t1.yaml",
+  "variants": [
+    "cvae_only",
+    "dfl_full"
+  ],
+  "seeds": [
+    20260808
+  ],
+  "runs": [
+    {
+      "variant": "cvae_only",
+      "seed": 20260808,
+      "output_dir": "E:\\Vscode\\ESS_planning\\dfl-storage-planning-local\\outputs\\baselines\\learning_objective\\hourly_layered_t1\\cvae_only\\seed_20260808",
+      "status": "failed",
+      "error": "FileNotFoundError: [Errno 2] No such file or directory: 'C:\\\\Users\\\\Administrator\\\\AppData\\\\Local\\\\Temp\\\\data\\\\processed\\\\ieee13_smartds_dfl_v2_outage\\\\dfl_scenarios_v2_48h.npz'"
+    }
+  ]
+}

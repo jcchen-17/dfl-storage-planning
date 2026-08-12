@@ -1,0 +1,84 @@
+CVAE CONTINUATION COMMAND
+D:\APPs\Anaconda\envs\storage-dfl\python.exe E:\Vscode\ESS_planning\dfl-storage-planning-local\scripts\train_generator.py --config E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103300\configs\cvae_only_seed_20260808.yaml --resume-checkpoint E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\cvae_only\seed_20260808\cvae.pt --additional-epochs 299
+
+Starting generator training with E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103300\configs\cvae_only_seed_20260808.yaml...
+Resuming cvae from epoch 1 for 299 additional epochs.
+CVAE epoch 10/300: loss=0.850405, reconstruction=0.401114, net_peak=0.006501, price_spread=1.915792, carbon_spread=0.772104, beta=0.0025, val_loss=1.062470, val_carbon_spread=1.049311
+CVAE epoch 20/300: loss=0.445408, reconstruction=0.242804, net_peak=0.006062, price_spread=1.729607, carbon_spread=0.305896, beta=0.005, val_loss=0.830660, val_carbon_spread=1.030724
+CVAE epoch 30/300: loss=0.315645, reconstruction=0.171875, net_peak=0.004317, price_spread=1.690642, carbon_spread=0.195235, beta=0.0075, val_loss=0.781059, val_carbon_spread=1.062354
+CVAE epoch 40/300: loss=0.216442, reconstruction=0.134801, net_peak=0.003079, price_spread=1.662156, carbon_spread=0.069312, beta=0.01, val_loss=0.666555, val_carbon_spread=0.928364
+CVAE epoch 50/300: loss=0.212318, reconstruction=0.125256, net_peak=0.002612, price_spread=1.700559, carbon_spread=0.094311, beta=0.01, val_loss=0.630879, val_carbon_spread=0.894987
+CVAE epoch 60/300: loss=0.188292, reconstruction=0.116223, net_peak=0.002619, price_spread=1.672435, carbon_spread=0.066614, beta=0.01, val_loss=0.620889, val_carbon_spread=0.893562
+CVAE epoch 70/300: loss=0.165276, reconstruction=0.102751, net_peak=0.002007, price_spread=1.660412, carbon_spread=0.048452, beta=0.01, val_loss=0.616432, val_carbon_spread=0.899017
+CVAE epoch 80/300: loss=0.158871, reconstruction=0.093612, net_peak=0.001801, price_spread=1.658791, carbon_spread=0.055692, beta=0.01, val_loss=0.623900, val_carbon_spread=0.927585
+CVAE epoch 90/300: loss=0.146325, reconstruction=0.088391, net_peak=0.001763, price_spread=1.669911, carbon_spread=0.043072, beta=0.01, val_loss=0.573893, val_carbon_spread=0.834301
+CVAE epoch 100/300: loss=0.128366, reconstruction=0.080163, net_peak=0.002392, price_spread=1.631979, carbon_spread=0.023104, beta=0.01, val_loss=0.554478, val_carbon_spread=0.808108
+CVAE epoch 110/300: loss=0.127321, reconstruction=0.077265, net_peak=0.001488, price_spread=1.636956, carbon_spread=0.029103, beta=0.01, val_loss=0.559176, val_carbon_spread=0.821675
+CVAE epoch 120/300: loss=0.133009, reconstruction=0.076438, net_peak=0.001793, price_spread=1.643302, carbon_spread=0.043756, beta=0.01, val_loss=0.589746, val_carbon_spread=0.876114
+CVAE epoch 130/300: loss=0.124221, reconstruction=0.071865, net_peak=0.001704, price_spread=1.643582, carbon_spread=0.035699, beta=0.01, val_loss=0.532454, val_carbon_spread=0.775639
+CVAE epoch 140/300: loss=0.108874, reconstruction=0.064694, net_peak=0.001186, price_spread=1.617357, carbon_spread=0.020831, beta=0.01, val_loss=0.528133, val_carbon_spread=0.774568
+CVAE epoch 150/300: loss=0.101051, reconstruction=0.061604, net_peak=0.001224, price_spread=1.614040, carbon_spread=0.012703, beta=0.01, val_loss=0.529253, val_carbon_spread=0.779216
+CVAE epoch 160/300: loss=0.102872, reconstruction=0.058665, net_peak=0.001358, price_spread=1.613296, carbon_spread=0.023253, beta=0.01, val_loss=0.522364, val_carbon_spread=0.772000
+CVAE epoch 170/300: loss=0.107492, reconstruction=0.058910, net_peak=0.001653, price_spread=1.616886, carbon_spread=0.032865, beta=0.01, val_loss=0.520795, val_carbon_spread=0.770121
+CVAE epoch 180/300: loss=0.098146, reconstruction=0.055517, net_peak=0.001694, price_spread=1.616870, carbon_spread=0.021997, beta=0.01, val_loss=0.542381, val_carbon_spread=0.814139
+CVAE epoch 190/300: loss=0.104282, reconstruction=0.057275, net_peak=0.001058, price_spread=1.624758, carbon_spread=0.031211, beta=0.01, val_loss=0.495669, val_carbon_spread=0.718727
+CVAE epoch 200/300: loss=0.104764, reconstruction=0.062586, net_peak=0.000925, price_spread=1.630492, carbon_spread=0.023051, beta=0.01, val_loss=0.498877, val_carbon_spread=0.721209
+CVAE epoch 210/300: loss=0.097366, reconstruction=0.052336, net_peak=0.000998, price_spread=1.623689, carbon_spread=0.029497, beta=0.01, val_loss=0.484156, val_carbon_spread=0.703685
+CVAE epoch 220/300: loss=0.093989, reconstruction=0.049447, net_peak=0.001100, price_spread=1.607198, carbon_spread=0.028447, beta=0.01, val_loss=0.494504, val_carbon_spread=0.723486
+CVAE epoch 230/300: loss=0.086228, reconstruction=0.048004, net_peak=0.001252, price_spread=1.589667, carbon_spread=0.018288, beta=0.01, val_loss=0.462914, val_carbon_spread=0.665779
+CVAE epoch 240/300: loss=0.079184, reconstruction=0.043979, net_peak=0.000626, price_spread=1.576111, carbon_spread=0.011714, beta=0.01, val_loss=0.473300, val_carbon_spread=0.684609
+CVAE epoch 250/300: loss=0.079724, reconstruction=0.042861, net_peak=0.000860, price_spread=1.587362, carbon_spread=0.017369, beta=0.01, val_loss=0.475756, val_carbon_spread=0.691046
+CVAE epoch 260/300: loss=0.086095, reconstruction=0.043378, net_peak=0.001280, price_spread=1.570195, carbon_spread=0.028154, beta=0.01, val_loss=0.469081, val_carbon_spread=0.672403
+CVAE epoch 270/300: loss=0.080843, reconstruction=0.040965, net_peak=0.001184, price_spread=1.584313, carbon_spread=0.024375, beta=0.01, val_loss=0.500922, val_carbon_spread=0.738470
+CVAE epoch 280/300: loss=0.081847, reconstruction=0.041237, net_peak=0.001683, price_spread=1.581497, carbon_spread=0.025545, beta=0.01, val_loss=0.505742, val_carbon_spread=0.746723
+CVAE epoch 290/300: loss=0.077734, reconstruction=0.038078, net_peak=0.001020, price_spread=1.573338, carbon_spread=0.022382, beta=0.01, val_loss=0.464579, val_carbon_spread=0.666694
+CVAE epoch 300/300: loss=0.072358, reconstruction=0.036634, net_peak=0.000510, price_spread=1.559320, carbon_spread=0.016263, beta=0.01, val_loss=0.468749, val_carbon_spread=0.676385
+generator: cvae
+device: cuda
+epochs: 299
+latent dim: 16
+loss: 1.455537 -> 0.072358
+checkpoint: E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\cvae_only\seed_20260808\cvae.pt
+TRAIN COMMAND
+D:\APPs\Anaconda\envs\storage-dfl\python.exe E:\Vscode\ESS_planning\dfl-storage-planning-local\scripts\train_dfl.py --config E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103300\configs\cvae_only_seed_20260808.yaml
+
+Starting DFL training with E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103300\configs\cvae_only_seed_20260808.yaml...
+DFL initialization: pretrained generator checkpoint
+training solves at relative gap 0.01; evaluation stays at 0.001
+generator: cvae
+method: recourse_feasibility
+device: cuda
+epochs: 0
+scenario weights: [0.19858040459298443, 0.0023659923450259565, 0.0023659923450259565, 0.19858040459298443, 0.19858040459298443, 0.19858040459298443, 0.0023659923450259565, 0.19858040459298443]
+final design: installed=['PCC'], P=1.7292 MW, E=8.2136 MWh
+checkpoint: E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\cvae_only\seed_20260808\runs\20260812-103449\checkpoint.pt
+run id: 20260812-103449
+
+EVALUATION COMMAND
+D:\APPs\Anaconda\envs\storage-dfl\python.exe E:\Vscode\ESS_planning\dfl-storage-planning-local\scripts\evaluate.py --config E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103300\configs\cvae_only_seed_20260808.yaml --checkpoint E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\cvae_only\seed_20260808\runs\20260812-103449\checkpoint.pt
+
+Starting evaluation with E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103300\configs\cvae_only_seed_20260808.yaml...
+Out-of-sample evaluation: solving 16 scenarios separately...
+No-storage reference: solving 16 scenarios separately...
+Perfect-information reference: solving the true scenario MILP...
+generator: cvae
+method: recourse_feasibility
+evaluated checkpoint: E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\cvae_only\seed_20260808\runs\20260812-103449\checkpoint.pt
+training run id: 20260812-103449
+trained carbon formulation: layered_pcc
+evaluation carbon formulation: layered_pcc
+evaluated design source: selected_training_design
+installed buses: ['PCC']
+power MW: {'PCC': 1.7291695967480345}
+energy MWh: {'PCC': 8.213555584553163}
+planning objective: 5317399.57
+validation objective: 5805793.89
+no-storage reference: 6016801.86
+storage value: 211007.96
+normalized decision regret: 0.024277
+load shedding MWh: 1.616215
+carbon excess tCO2: 724.422542
+PV curtailment MWh: 0.000000
+served demand MWh: 74476.396569
+recourse operating cost: 5320200.38
+recourse total planning cost: 5805793.89

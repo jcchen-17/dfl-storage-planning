@@ -1,0 +1,11 @@
+PRETRAIN COMMAND
+D:\APPs\Anaconda\envs\storage-dfl\python.exe E:\Vscode\ESS_planning\dfl-storage-planning-local\scripts\train_generator.py --config E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103300\configs\pretrain_seed_20260808.yaml
+
+Starting generator training with E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103300\configs\pretrain_seed_20260808.yaml...
+CVAE epoch 1/1: loss=2.236776, reconstruction=0.722480, net_peak=0.024096, price_spread=1.982790, carbon_spread=2.891312, beta=0.00025, val_loss=1.500970, val_carbon_spread=1.502361
+generator: cvae
+device: cuda
+epochs: 1
+latent dim: 16
+loss: 2.236776 -> 2.236776
+checkpoint: E:\Vscode\ESS_planning\dfl-storage-planning-local\outputs\baselines\learning_objective\hourly_layered_t1\suites\20260812-103300\pretrained\seed_20260808\cvae.pt

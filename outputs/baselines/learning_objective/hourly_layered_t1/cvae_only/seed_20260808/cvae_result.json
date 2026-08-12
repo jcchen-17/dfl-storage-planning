@@ -1,0 +1,90 @@
+{
+  "generator": "cvae",
+  "device": "cuda",
+  "dataset": "E:\\Vscode\\ESS_planning\\dfl-storage-planning-local\\data\\processed\\ieee13_smartds_dfl_v2_outage\\dfl_scenarios_v2_48h.npz",
+  "split": "train",
+  "scenarios": 182,
+  "validation_split": "validation",
+  "validation_scenarios": 182,
+  "trajectory_dim": 624,
+  "latent_dim": 16,
+  "epochs": 299,
+  "start_epoch": 1,
+  "completed_epochs": 300,
+  "initial_loss": 1.4555368344862383,
+  "final_loss": 0.07235847724663032,
+  "final_metrics": {
+    "epoch": 299,
+    "loss": 0.07235847724663032,
+    "metrics": {
+      "loss": 0.07235847724663032,
+      "reconstruction": 0.0366336104797793,
+      "ramp": 0.03118336782023147,
+      "kl": 2.113014158311781,
+      "net_load": 0.016213831962546804,
+      "net_peak": 0.0005096360186503811,
+      "price_spread": 1.5593201577008426,
+      "carbon_spread": 0.01626339000086863,
+      "beta": 0.01,
+      "train_eval_loss": 0.06686183892108583,
+      "train_eval_reconstruction": 0.03305176792891471,
+      "train_eval_ramp": 0.02933686554104417,
+      "train_eval_kl": 2.1307207568661197,
+      "train_eval_net_load": 0.013498516630504158,
+      "train_eval_net_peak": 0.0008101359861749377,
+      "train_eval_price_spread": 1.5631768651061007,
+      "train_eval_carbon_spread": 0.013414893995274554,
+      "validation_loss": 0.4687491259077093,
+      "validation_reconstruction": 0.09222503350331233,
+      "validation_ramp": 0.0575385118660691,
+      "validation_kl": 1.999045193850339,
+      "validation_net_load": 0.0559388097007196,
+      "validation_net_peak": 0.006997508498338552,
+      "validation_price_spread": 1.5730005607500182,
+      "validation_carbon_spread": 0.676385047016563
+    }
+  },
+  "checkpoint": "E:\\Vscode\\ESS_planning\\dfl-storage-planning-local\\outputs\\baselines\\learning_objective\\hourly_layered_t1\\cvae_only\\seed_20260808\\cvae.pt",
+  "validation_minima": {
+    "validation_carbon_spread": {
+      "epoch": 297,
+      "value": 0.659649364895873,
+      "final": 0.676385047016563
+    },
+    "validation_kl": {
+      "epoch": 2,
+      "value": 0.04400740711243598,
+      "final": 1.999045193850339
+    },
+    "validation_loss": {
+      "epoch": 244,
+      "value": 0.46021512904009976,
+      "final": 0.4687491259077093
+    },
+    "validation_net_load": {
+      "epoch": 230,
+      "value": 0.053403306752443314,
+      "final": 0.0559388097007196
+    },
+    "validation_net_peak": {
+      "epoch": 113,
+      "value": 0.006111879085937699,
+      "final": 0.006997508498338552
+    },
+    "validation_price_spread": {
+      "epoch": 297,
+      "value": 1.5488200842679203,
+      "final": 1.5730005607500182
+    },
+    "validation_ramp": {
+      "epoch": 280,
+      "value": 0.05628209954107201,
+      "final": 0.0575385118660691
+    },
+    "validation_reconstruction": {
+      "epoch": 242,
+      "value": 0.08987119376331895,
+      "final": 0.09222503350331233
+    }
+  }
+}

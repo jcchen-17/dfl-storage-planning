@@ -1,0 +1,6 @@
+{
+  "run_id": "20260811-210221",
+  "checkpoint": "E:\\Vscode\\ESS_planning\\dfl-storage-planning-local\\outputs\\baselines\\learning_objective\\hourly_layered_t1\\no_gradient_balance\\seed_20260808\\runs\\20260811-210221\\checkpoint.pt",
+  "history": "E:\\Vscode\\ESS_planning\\dfl-storage-planning-local\\outputs\\baselines\\learning_objective\\hourly_layered_t1\\no_gradient_balance\\seed_20260808\\runs\\20260811-210221\\history.json",
+  "result": "E:\\Vscode\\ESS_planning\\dfl-storage-planning-local\\outputs\\baselines\\learning_objective\\hourly_layered_t1\\no_gradient_balance\\seed_20260808\\runs\\20260811-210221\\result.json"
+}
