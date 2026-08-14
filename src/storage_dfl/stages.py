@@ -950,6 +950,11 @@ def evaluate_stage(
     carbon_cap_scope_override: str | None = None,
     evaluation_carbon_formulation_override: str | None = None,
     checkpoint_override: str | Path | None = None,
+    perfect_information: bool = True,
+    normalization_override: str | Path | None = None,
+    output_override: str | Path | None = None,
+    solver_workers: int | None = None,
+    solver_threads: int | None = None,
 ) -> dict:
     config = _apply_generator_override(load_config(config_path), generator_override)
     if carbon_formulation_override is not None:
@@ -985,13 +990,38 @@ def evaluate_stage(
         config = replace(
             config, planning=replace(config.planning, solver_memory_limit_mb=memory_limit_mb)
         )
+    planning_parallel_overrides = {}
+    if solver_workers is not None:
+        if solver_workers <= 0:
+            raise ValueError("solver_workers must be positive.")
+        planning_parallel_overrides["solver_max_parallel_workers"] = solver_workers
+    if solver_threads is not None:
+        if solver_threads <= 0:
+            raise ValueError("solver_threads must be positive.")
+        planning_parallel_overrides["solver_threads"] = solver_threads
+    if planning_parallel_overrides:
+        config = replace(
+            config,
+            planning=replace(config.planning, **planning_parallel_overrides),
+        )
     if method_override is not None:
         if method_override != "recourse_feasibility":
             raise ValueError("Only method_override='recourse_feasibility' is retained.")
         config = replace(config, dfl=replace(config.dfl, method=method_override))
     paths = ArtifactPaths(config.output_dir)
     feeder, observed_pool = _experiment_data(config, config.data.test_split)
-    codec = _load_codec(paths, feeder)
+    if normalization_override is None:
+        normalization_path = paths.normalization
+        codec = _load_codec(paths, feeder)
+    else:
+        normalization_path = Path(normalization_override).expanduser().resolve()
+        if not normalization_path.exists():
+            raise FileNotFoundError(
+                f"Normalization file not found: {normalization_path}"
+            )
+        codec = ScenarioCodec.from_normalization_dict(
+            _read_json(normalization_path), feeder
+        )
     _require_current_codec(config, codec)
     evaluation_scenarios, evaluation_weights, evaluation_names = select_scenarios(
         config.dfl.evaluation_selection_rule,
@@ -1185,7 +1215,7 @@ def evaluate_stage(
     )
     perfect_information = None
     exact_decision_regret = None
-    if checkpoint.get("method") == "recourse_feasibility":
+    if perfect_information and checkpoint.get("method") == "recourse_feasibility":
         print("Perfect-information reference: solving the true scenario MILP...", flush=True)
         perfect_information = oracle.solve(
             evaluation_pool.scenarios,
@@ -1200,6 +1230,7 @@ def evaluate_stage(
         "method": checkpoint.get("method", "recourse_feasibility"),
         "generator": checkpoint_generator,
         "evaluated_checkpoint": str(checkpoint_path.resolve()),
+        "normalization": str(normalization_path.resolve()),
         "training_run_id": checkpoint.get("run_id"),
         "device": str(device),
         "test_split": config.data.test_split,
@@ -1250,12 +1281,17 @@ def evaluate_stage(
         ),
         "decision_regret": exact_decision_regret,
     }
-    evaluation_dir = checkpoint_path.parent
-    evaluation_name = f"evaluation{evaluation_suffix}.json"
-    trajectory_name = f"trajectories{evaluation_suffix}.csv"
-    _write_json(evaluation_dir / evaluation_name, payload)
+    if output_override is None:
+        evaluation_path = checkpoint_path.parent / f"evaluation{evaluation_suffix}.json"
+        trajectory_path = checkpoint_path.parent / f"trajectories{evaluation_suffix}.csv"
+    else:
+        evaluation_path = Path(output_override).expanduser().resolve()
+        trajectory_path = evaluation_path.with_name(
+            f"{evaluation_path.stem}_trajectories.csv"
+        )
+    _write_json(evaluation_path, payload)
     _write_trajectories(
-        evaluation_dir / trajectory_name,
+        trajectory_path,
         evaluation_pool,
         generated,
         weights,

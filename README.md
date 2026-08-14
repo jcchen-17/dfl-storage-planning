@@ -53,6 +53,32 @@ launch creates one self-contained `runs/YYYYMMDD-HHMMSS/` directory containing
 `tensorboard/` events. Evaluation files are written beside that checkpoint,
 while `latest.json` points to the most recently completed run.
 
+Compare the learned supports against scenarios selected directly from the
+observed training library:
+
+```powershell
+# One seed, K from the config, and the complete 182-scenario test split.
+python scripts/run_scenario_selection_baselines.py
+
+# A multi-seed Random/K-means/Aggregate comparison, with Farthest run once.
+python scripts/run_scenario_selection_baselines.py --seeds 0 1 2 3 4 --parallel-runs 2
+```
+
+The runner computes one shared no-storage reference, plans with the same K for
+`random`, `kmeans`, `farthest`, and `aggregate`, fixes each resulting storage
+design, and solves exact operational recourse on the identical held-out set.
+Each suite writes `summary.json`, `comparison.csv`, per-run JSON, and console
+logs below `outputs/baselines/scenario_selection/`. A joint perfect-information
+test MILP is deliberately opt-in with `--perfect-information`, since it can be
+very large when all 182 test scenarios are used.
+
+Evaluate a learned checkpoint on that same complete test split without starting
+the very large joint perfect-information MILP:
+
+```powershell
+python scripts/evaluate.py --checkpoint PATH_TO_CHECKPOINT --scenarios 182 --skip-perfect-information
+```
+
 Planning JSON now includes an optional `carbon_ledger` with annualized PCC
 imports, diesel/PV supply, storage charge/discharge, source emissions and carbon
 delivered to the data centre. This makes the source, storage-vintage and

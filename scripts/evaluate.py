@@ -56,11 +56,47 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--solver-workers",
+        type=int,
+        default=None,
+        help="parallel scenario-recourse workers used only for this evaluation",
+    )
+    parser.add_argument(
+        "--solver-threads",
+        type=int,
+        default=None,
+        help="threads used by each solver worker only for this evaluation",
+    )
+    parser.add_argument(
         "--checkpoint",
         default=None,
         help=(
             "evaluate this exact DFL checkpoint; when omitted, use the most "
             "recently completed run manifest and then legacy paths as fallback"
+        ),
+    )
+    parser.add_argument(
+        "--normalization",
+        default=None,
+        help=(
+            "normalization.json paired with the checkpoint; default uses the "
+            "configured output directory"
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "write evaluation JSON here instead of replacing evaluation.json "
+            "beside the checkpoint"
+        ),
+    )
+    parser.add_argument(
+        "--skip-perfect-information",
+        action="store_true",
+        help=(
+            "skip the joint test-set planning oracle; useful when evaluating "
+            "a fixed design on the complete test split"
         ),
     )
     args = parser.parse_args()
@@ -76,6 +112,11 @@ def main() -> None:
             args.evaluation_carbon_formulation
         ),
         checkpoint_override=args.checkpoint,
+        perfect_information=not args.skip_perfect_information,
+        normalization_override=args.normalization,
+        output_override=args.output,
+        solver_workers=args.solver_workers,
+        solver_threads=args.solver_threads,
     )
     print(f"generator: {result['generator']}")
     print(f"method: {result['method']}")
