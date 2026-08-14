@@ -1,604 +1,894 @@
-\documentclass[journal]{IEEEtran}
+\documentclass[times]{elsarticle}
+% \documentclass[review,doubleblind,times,12p]{elsarticle}
+\let\today\relax
+\makeatletter
+\newcommand{\rmnum}[1]{\romannumeral #1}
+\newcommand{\Rmnum}[1]{\expandafter\@slowromancap\romannumeral #1@}
+\makeatother
 
-\usepackage{amsmath,amssymb,bm}
-\usepackage{booktabs}
-\usepackage{graphicx}
-\usepackage{multirow}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{lineno}
+\modulolinenumbers[5]
+\usepackage{amsmath}
+\usepackage{amsfonts,tabularx}
 \usepackage{algorithm}
-\usepackage{algpseudocode}
-\usepackage{cite}
-\usepackage{url}
-\usepackage[hidelinks]{hyperref}
+\usepackage[noend]{algpseudocode}
 
-\interdisplaylinepenalty=2500
-\DeclareMathOperator*{\argmin}{arg\,min}
-\newcommand{\R}{\mathbb{R}}
-\newcommand{\E}{\mathbb{E}}
-\newcommand{\pos}[1]{\left[#1\right]_{+}}
+\usepackage{amsmath,amssymb,bm,graphicx,epstopdf}
+\usepackage{amsthm}
+\allowdisplaybreaks
+\usepackage{dblfloatfix}
+\usepackage{soul}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{xurl}
+\usepackage{xcolor}
+\usepackage{amssymb}
+\usepackage{fancyvrb}
+\usepackage{soul}
+
+\usepackage{booktabs,enumitem,ragged2e}
+
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{graphbox}
+\usepackage{mathtools}
+
+%% Begin nomenclature setup
+
+\usepackage{framed} % Framing content
+\usepackage{multicol} % Multiple columns environment
+
+\usepackage{nomencl} % Nomenclature package
+\makenomenclature
+\setlength{\nomitemsep}{-\parskip} % Baseline skip between items
+
+% \renewcommand*\nompreamble{\begin{multicols}{2}}
+% \renewcommand*\nompostamble{\end{multicols}}
+
+\usepackage{etoolbox}
+\renewcommand\nomgroup[1]{%
+  \item[\bfseries
+  \ifstrequal{#1}{A}{Abbreviations}{%
+  \ifstrequal{#1}{I}{Indices and Constants}{}%
+  \ifstrequal{#1}{V}{Variables and Functions}{}}
+]}
+
+%% End nomenclature setup
+%\documentclass{article}
+\usepackage{amsmath}
+\newenvironment{conditions}
+  {\par\vspace{\abovedisplayskip}\noindent\begin{tabular}{>{$}l<{$} @{${}={}$} l}}
+  {\end{tabular}\par\vspace{\belowdisplayskip}}
+
+\setlength{\parindent}{12pt}
+
+\usepackage[noend]{algpseudocode}
+
+\makeatletter
+\newcommand{\multiline}[1]{%
+  \begin{tabularx}{\dimexpr\linewidth-\ALG@thistlm}[t]{@{}X@{}}
+    #1
+  \end{tabularx}
+}
+\makeatother
+
+\usepackage[colorlinks=true]{hyperref}
+\hypersetup{
+    colorlinks,
+    citecolor=blue,
+    linkcolor=blue
+}
+% \newif\ifwidefig
+
+% \widefigfalse
+%\widefigtrue
+
+
+
+\newcommand{\eV}[2]{\ensuremath{\bar{V}_{#1}^{#2}}}
+
+
+\newcommand{\red}[1]{{\color{red}#1}}
+
+\DeclareMathOperator*{\argmax}{\arg\!\max}
+
+% Additional packages/commands required by the cjc-2 manuscript content
+\usepackage{mathrsfs}
+\DeclareMathOperator*{\argmin}{\arg\!\min}
+
+% Elsevier-compatible replacement for IEEEdescription used in cjc-2
+\newenvironment{manuscriptdescription}
+  {\begin{description}[style=multiline,leftmargin=4.8cm,labelwidth=4.5cm,align=left]}
+  {\end{description}}
 
 \begin{document}
+\begin{frontmatter}
 
-\title{Decision-Focused Storage Planning for a Grid-Connected Data Center With Carbon-Vintage Accounting}
+\title{Feasibility-Aware Scenario Learning for Carbon-Constrained Battery Planning in Data Centers}
 
-\author{Author Name% <- replace before submission
-\thanks{The author is with the School of Electrical Engineering, Southeast
-University, Nanjing, China (e-mail: author@seu.edu.cn).}}
-
-\maketitle
+\author[seuaddress]{Author Name\corref{correspondingauthor}}
+\cortext[correspondingauthor]{Corresponding author.}
+\ead{author@seu.edu.cn}
+\address[seuaddress]{School of Electrical Engineering, Southeast University,
+Nanjing, China}
 
 \begin{abstract}
-This paper studies behind-the-meter battery planning for a grid-connected
-data center supplied by the utility grid, co-located photovoltaic generation,
-and modular diesel backup. The planning model sizes battery power and energy
-under representative 48-h scenarios while accounting for grid outages,
-time-varying electricity prices, and time-varying grid carbon intensity. A
-linear carbon-vintage formulation associates stored energy with its physical
-source and charging interval; consequently, battery discharge retains the
-carbon intensity of the energy used to charge it. Carbon compliance is imposed
-as an energy-weighted horizon budget with different allowances during normal
-grid-connected operation and emergency islanded operation. Excess emissions
-are feasible but explicitly priced, whereas involuntary load shedding is
-restricted to outage intervals. To construct a small decision-relevant
-scenario set, a conditional variational autoencoder is trained jointly with a
-recourse-aware decision loss. Exact mixed-integer planning and fixed-design
-recourse solutions provide detached severity signals, while gradients flow
-through directional load, photovoltaic, and carbon forecast errors. An
-aggregate source-emissions formulation is included as a controlled baseline so
-that the value of carbon-vintage accounting can be isolated without changing
-the physical system, scenarios, or training protocol.
+Battery planning for data centers must jointly account for electricity cost,
+service continuity, and the carbon content of delivered electricity. Its
+solution can be sensitive to rare combinations of high demand, low photovoltaic
+generation, carbon-intensive grid supply, and grid outages, whereas conventional
+scenario reduction is designed primarily to preserve statistical similarity.
+This paper formulates a two-stage planning problem for a data center connected
+through a single point of common coupling and introduces a source- and
+charging-time-resolved ledger for stored carbon. The formulation tracks initial,
+photovoltaic, diesel, and grid-charged energy layers and enforces hourly
+carbon-intensity limits on electricity delivered to the data center. To
+construct a compact scenario support, a conditional variational autoencoder is
+fine-tuned using fixed-design recourse feedback from the exact planning model.
+The proposed loss combines an infeasibility penalty, which corrects optimistic
+demand, photovoltaic, and carbon trajectories, with an optimality-preserving
+penalty that prevents overly conservative scenarios from excluding a known good
+design. Mixed-integer solver outputs are used only as detached violation
+severities; no differentiation through the solver or regret gradient is
+required. The evaluation compares the learned support with statistical
+scenario-selection and predict-then-optimize baselines in terms of
+out-of-sample cost, load shedding, carbon excess, and storage design quality.
+% TODO: Replace the final sentence with quantitative results.
 \end{abstract}
 
-\begin{IEEEkeywords}
-Battery energy storage, carbon accounting, data centers, decision-focused
-learning, scenario generation, stochastic planning.
-\end{IEEEkeywords}
+\begin{keyword}
+Battery energy storage \sep carbon accounting \sep data center \sep
+decision-focused learning \sep scenario generation \sep stochastic planning
+\end{keyword}
 
+\end{frontmatter}
+
+% =====================================================================
 \section*{Nomenclature}
-\begin{IEEEdescription}[\IEEEusemathlabelsep\IEEEsetlabelwidth{$p^{\mathrm{dg,ch}}_{s,t}$}]
-\item[$s,t$] Scenario and hourly interval indices.
-\item[$\mathcal S,\mathcal T$] Support-scenario and interval sets.
-\item[$\mathcal L_s$] Carbon-vintage set in scenario $s$.
-\item[$\pi_s,A_s$] Scenario probability and annualization factor.
-\item[$\Delta t$] Interval duration in hours.
-\item[$d_{s,t},r_{s,t}$] Facility demand and available PV power.
+
+\subsubsection*{Sets and Indices}
+\begin{manuscriptdescription}
+\item[$\mathcal{S}$] Set of planning scenarios, indexed by $s$.
+\item[$\mathcal{T}$] Set of hourly intervals, indexed by $t$.
+\item[$\mathcal{K}_s$] Set of storage carbon layers, indexed by $k$.
+\item[$\widehat{\mathcal{S}}$] Reduced scenario support.
+\end{manuscriptdescription}
+
+\subsubsection*{Parameters}
+\begin{manuscriptdescription}
+\item[$D_{s,t},V_{s,t}$] Data-center demand and available PV power.
 \item[$a_{s,t}$] Grid-availability indicator.
-\item[$\lambda_{s,t},\gamma_{s,t}$] Grid price and grid carbon intensity.
-\item[$\gamma^{\mathrm{dg}}$] Diesel carbon intensity.
-\item[$\bar\gamma^{\mathrm g},\bar\gamma^{\mathrm o}$] Normal and outage carbon allowances.
-\item[$z,P,E$] Battery build decision, rated power, and rated energy.
-\item[$p^{q,l}_{s,t},p^{q,ch}_{s,t}$] Source-$q$ power supplied to load and battery.
-\item[$p^{\mathrm{dis}}_{s,\ell,t}$] Battery output attributed to vintage $\ell$.
-\item[$e_{s,\ell,t},\kappa_{s,\ell}$] Energy and carbon intensity of vintage $\ell$.
-\item[$u_{s,t}$] Involuntary load shedding.
-\item[$\Xi_s$] Horizon carbon-budget excess.
-\item[$G_\phi$] Conditional variational scenario generator.
-\item[$x^*(\widehat{\mathcal S})$] Design optimized on generated supports.
-\item[$Q(x;\mathcal S)$] Fixed-design recourse cost on scenarios $\mathcal S$.
-\end{IEEEdescription}
+\item[$p_{s,t},c_{s,t}$] Grid price and grid carbon intensity.
+\item[$\pi_s,\rho_s$] Scenario probability and annual occurrence factor.
+\item[$\eta^{\mathrm{ch}},\eta^{\mathrm{dc}}$] Storage charging/discharging efficiencies.
+\item[$\underline\sigma,\overline\sigma$] Minimum/maximum state-of-charge fractions.
+\item[$\bar c^{\mathrm n},\bar c^{\mathrm o}$] Normal/outage carbon limits.
+\item[$\gamma_{s,k}$] Internal carbon intensity of storage layer $k$.
+\end{manuscriptdescription}
 
+\subsubsection*{Variables and Learning Symbols}
+\begin{manuscriptdescription}
+\item[$u^{\mathrm{es}}$] Binary storage build variable.
+\item[$P^{\mathrm{cap}},E^{\mathrm{cap}}$] Installed power and energy capacity.
+\item[$e_{s,k,t},P^{\mathrm{dc}}_{s,k,t}$] Layer energy and discharge power.
+\item[$P^{\mathrm{shed}}_{s,t},P^{\mathrm{curt}}_{s,t}$] Load shedding and PV curtailment.
+\item[$\Xi_{s,t}$] Carbon delivered above the hourly budget.
+\item[$G_\theta$] Conditional scenario decoder.
+\item[$L_{\mathrm{IPL}},L_{\mathrm{OPL}}$] Infeasibility and optimality-preserving losses.
+\item[$\widehat{\bm y},\bm y^{\mathrm{PI}}$] Generated-support and perfect-information designs.
+\item[$R$] Normalized out-of-sample decision regret.
+\end{manuscriptdescription}
+
+% =====================================================================
 \section{Introduction}
-\IEEEPARstart{D}{ata-center} electricity demand is large, continuous, and
-increasingly exposed to both reliability and carbon-performance requirements.
-Behind-the-meter batteries can reduce peak purchases, exploit co-located PV,
-and bridge the residual power deficit during utility outages. Their planning
-value, however, depends on the joint occurrence of demand, PV availability,
-grid carbon intensity, tariffs, and outages. A tractable planning study must
-therefore address both temporal carbon accounting and scenario reduction.
+\label{sec:introduction}
 
-A common aggregate-emissions calculation charges the battery when electricity
-enters storage but treats later discharge without retaining the charging
-source. That approximation can misstate the delivered carbon benefit of
-shifting energy between hours. The formulation in this paper instead uses
-virtual carbon vintages. Each vintage is linear, source identifiable, and
-auditable; no bilinear state-of-carbon variable or carbon-flow relaxation is
-required. This is particularly useful for a single point of common coupling
-(PCC), where feeder power-flow and nodal-mixing models would add complexity
-without representing the system implemented in the case study.
+Electricity demand from data centers is large, persistent, and increasingly
+exposed to both energy-system and environmental constraints. Behind-the-meter
+photovoltaic (PV) generation and battery energy storage can reduce peak imports,
+maintain service during grid interruptions, and shift electricity consumption
+toward lower-carbon hours. These services interact. A battery sized only for
+energy arbitrage may be inadequate during an outage, while a battery sized only
+for reliability may be charged at times that undermine a carbon-intensity
+target. Planning therefore requires a common representation of cost,
+reliability, and carbon delivery under uncertainty.
 
-Scenario reduction creates a second difficulty. A statistically accurate
-generator need not preserve rare combinations that change the capacity
-decision. Decision-focused learning (DFL) addresses this mismatch by training
-the scenario generator with feedback from planning and recourse problems
-\cite{Donti2017TaskBased}. Here, the mixed-integer solver remains a detached
-black box. Differentiable directional losses use its physical violation
-magnitudes to correct optimistic or overly conservative generated scenarios.
+Carbon-aware operation introduces an accounting question that is absent from
+ordinary energy balancing. Electricity stored at different times may carry
+different carbon intensities, and electricity charged from PV, the grid, and a
+backup generator should not become indistinguishable merely because it occupies
+the same physical battery. A perfectly mixed model assigns one average
+intensity to the complete inventory. This abstraction can erase the temporal
+and source information that gives storage its carbon value. Carbon-aware
+optimal power-flow research has established the importance of attributing
+emissions to electricity consumption \cite{chen2025copf}; an analogous issue
+arises across time when electricity is carried through storage.
 
-The contributions are as follows.
-\begin{itemize}
-\item An exact linear battery carbon-vintage model is developed for a
-grid-connected data-center PCC with PV, diesel backup, and outage-only load
-shedding.
-\item A mixed normal/outage horizon carbon budget separates routine carbon
-compliance from emergency reliability while retaining all emissions in an
-auditable ledger.
-\item A joint CVAE--DFL procedure combines reconstruction with
-infeasibility- and optimality-preserving recourse losses, including a
-grid-availability mask for carbon learning.
-\item A source-average carbon formulation is defined as a controlled baseline;
-all noncarbon physics, costs, scenarios, and training settings are held fixed.
-\end{itemize}
+The second challenge is computational. Capacity planning is evaluated over
+joint trajectories of demand, renewable availability, electricity price, grid
+carbon intensity, and contingencies. A large historical pool provides coverage
+but makes the mixed-integer planning problem expensive. Classical scenario
+reduction chooses a smaller probability measure that is close to the original
+under a distributional metric \cite{Dupacova2003}. Such proximity is not
+necessarily aligned with the downstream decision. For carbon-constrained
+storage, a modest statistical error can be decisive if it occurs during an
+outage or in a charging hour whose energy is later used under a binding carbon
+limit.
 
-\section{System and Planning Problem}
-\label{sec:planning}
+Decision-focused learning addresses the mismatch between predictive accuracy
+and optimization quality \cite{Wilder2019}. Direct differentiation is difficult
+here because the planning problem contains build and operating binaries and
+because only the first-stage storage design, rather than a complete operating
+schedule, transfers from generated scenarios to realized conditions. Moreover,
+predicted demand, PV, and carbon intensity enter constraints. Optimistic
+predictions may therefore produce a low-cost design that sheds load or violates
+a carbon target when re-dispatched on real data. Feasibility-aware
+decision-focused learning distinguishes such predictions from overly
+conservative predictions that exclude a good decision \cite{Mandi2025}.
 
-\subsection{Scenario Representation}
-The implemented system has one PCC. Scenario $s$ is a 48-h trajectory with
-hourly resolution and contains $d_{s,t}$, $r_{s,t}$, $a_{s,t}$,
-$\lambda_{s,t}$, and $\gamma_{s,t}$. The facility demand is constructed from a
-workload/PUE proxy but is inelastic in the planning model; workload shifting
-and deferrable-computing variables are not included. For probability
-$\pi_s$, the annualization factor is
-\begin{equation}
-A_s=\pi_s\frac{8760}{|\mathcal T|\Delta t}.
-\label{eq:annualization}
-\end{equation}
-All first-stage decisions are shared by the support scenarios, whereas
+This paper develops an integrated planning and learning framework. A
+conditional variational autoencoder (CVAE) \cite{Sohn2015} generates a compact
+set of 48-hour scenarios. Each generated set is passed to an exact single-PCC
+storage-planning model. Its build, power, and energy decisions are fixed and
+re-evaluated with optimal recourse on real scenarios. Hourly load shedding and
+carbon excess returned by the solver identify decision-critical prediction
+errors. A complementary optimality-preserving term evaluates a
+perfect-information design under the generated constraints, preventing the
+generator from obtaining feasibility by making every scenario uniformly severe.
+
+The main contributions are as follows.
+\begin{enumerate}[leftmargin=*,label=\arabic*)]
+\item A two-stage storage-planning formulation is developed for a single-PCC
+data-center microgrid with electricity cost, demand charges, outage reliability,
+and load-side carbon limits. An exact source- and charging-time-resolved ledger
+preserves the carbon intensity of stored electricity without the bilinear mixing
+identity required by an average-inventory model.
+\item A feasibility-aware decision-focused scenario-generation method is
+adapted to two-stage storage planning. It combines fixed-design recourse,
+infeasibility and optimality-preserving losses, and decoder-gradient balancing,
+while treating the mixed-integer solver as a detached black box.
+\item A leakage-free evaluation protocol compares learned and statistically
+selected supports on common held-out scenarios using cost, reliability, carbon
+excess, installed capacity, and a perfect-information regret reference.
+\end{enumerate}
+
+Section~\ref{sec:formulation} formulates the storage-planning problem.
+Section~\ref{sec:methodology} presents the decision-focused methodology.
+Section~\ref{sec:case} describes the case study, and
+Section~\ref{sec:conclusion} concludes the paper.
+
+% =====================================================================
+\section{Carbon-Aware Storage Planning Formulation}
+\label{sec:formulation}
+
+\subsection{System and Scenario Structure}
+
+The system consists of a data center, behind-the-meter PV, a dispatchable
+backup generator, and one candidate battery connected behind a single point of
+common coupling (PCC). The PCC abstraction deliberately removes feeder
+power-flow and multi-location siting effects. The first-stage decision is
+whether to build the battery and, if built, its rated power and energy. All
 dispatch variables are scenario dependent.
 
-\subsection{Battery Investment and Objective}
-The first stage selects installation $z\in\{0,1\}$, power $P$, and energy $E$:
-\begin{subequations}\label{eq:sizing}
-\begin{align}
-\underline Pz\le P\le\overline Pz,\qquad
-\underline Ez\le E\le\overline Ez,\label{eq:sizing_bounds}\\
-\underline hP\le E\le\overline hP.\label{eq:duration}
-\end{align}
-\end{subequations}
-The annual investment cost is
+Scenario $s\in\mathcal S$ is the joint trajectory
 \begin{equation}
-C^{\mathrm{inv}}=\mathrm{CRF}\,\beta^{\mathrm{cap}}
-\left(c^zz+c^PP+c^EE\right),
+\bm\xi_s=\{D_{s,t},V_{s,t},p_{s,t},c_{s,t},a_{s,t}\}_{t\in\mathcal T},
+\label{eq:scenario}
+\end{equation}
+where $D$, $V$, $p$, $c$, and $a$ denote facility demand, available PV,
+grid price, grid carbon intensity, and grid availability. Each block contains
+$T=48$ hourly intervals. With physical probability $\pi_s$, its annual
+occurrence factor is
+\begin{equation}
+\rho_s=\pi_s\frac{8760}{T\Delta t}.
+\label{eq:annualization}
+\end{equation}
+This weighting corrects the deliberate oversampling of outage windows.
+
+The planning problem has the two-stage form
+\begin{equation}
+\min_{\bm y\in\mathcal Y} I(\bm y)+
+\mathbb{E}_{\bm\xi\sim\mathbb{P}}[Q(\bm y,\bm\xi)],
+\qquad
+\bm y=(u^{\mathrm{es}},P^{\mathrm{cap}},E^{\mathrm{cap}}).
+\label{eq:two_stage}
+\end{equation}
+
+\subsection{Planning Objective}
+
+The annualized investment cost is
+\begin{equation}
+I(\bm y)=\mathrm{CRF}
+\left(c^{\mathrm{site}}u^{\mathrm{es}}+c^P P^{\mathrm{cap}}
++c^E E^{\mathrm{cap}}\right).
 \label{eq:investment}
 \end{equation}
-where $\beta^{\mathrm{cap}}$ is a sensitivity multiplier. The complete
-two-stage objective is
+Let $P^{\mathrm{peak}}$ denote the maximum grid import across planning
+scenarios. The operating objective is
 \begin{align}
-\min\quad &C^{\mathrm{inv}}+c^{\mathrm{pk}}p^{\mathrm{pk}}
- +\sum_{s\in\mathcal S}A_s\Bigg\{
- \sum_{t\in\mathcal T}\Delta t\bigg[
- \lambda_{s,t}p^{\mathrm g}_{s,t}
- +c^{\mathrm{dg}}p^{\mathrm{dg}}_{s,t}\nonumber\\
-&\quad+c^{\mathrm{deg}}(p^{\mathrm{ch}}_{s,t}+p^{\mathrm{dis}}_{s,t})
- +c^{\mathrm{curt}}p^{\mathrm{curt}}_{s,t}
- +c^{\mathrm{shed}}u_{s,t}\bigg]
- +c^{\mathrm{CO_2}}\Xi_s\Bigg\}.
-\label{eq:objective}
+C^{\mathrm{op}}={}&c^{\mathrm{dem}}P^{\mathrm{peak}}
++\sum_{s,t}\rho_s\Delta t\big[
+p_{s,t}(P^{g,L}_{s,t}+P^{g,B}_{s,t})
+\nonumber\\
+&+c^d(P^{d,L}_{s,t}+P^{d,B}_{s,t})
++c^{\mathrm{deg}}(P^{\mathrm{ch}}_{s,t}+P^{\mathrm{dc}}_{s,t})
+\nonumber\\
+&+c^{\mathrm{curt}}P^{\mathrm{curt}}_{s,t}
++c^{\mathrm{shed}}P^{\mathrm{shed}}_{s,t}
++c^{\mathrm{CO_2}}\Xi_{s,t}\big].
+\label{eq:operating_cost}
 \end{align}
-Thus, carbon compliance is soft but priced. It becomes a hard constraint only
-when $\Xi_s$ is removed.
+The planning oracle minimizes $C^{\mathrm{ann}}=I+C^{\mathrm{op}}$.
+Carbon slack is diagnostic and penalized when enabled; otherwise the same
+carbon condition is imposed as a hard constraint.
 
-\subsection{PCC Dispatch and Reliability}
-Let $q\in\{\mathrm g,\mathrm{pv},\mathrm{dg}\}$ identify grid, PV, and diesel
-sources. Source power is split between direct load supply and battery charging:
-\begin{subequations}\label{eq:source_totals}
-\begin{align}
-p^{\mathrm g}_{s,t}&=p^{\mathrm{g,l}}_{s,t}+p^{\mathrm{g,ch}}_{s,t},\\
-p^{\mathrm{dg}}_{s,t}&=p^{\mathrm{dg,l}}_{s,t}+p^{\mathrm{dg,ch}}_{s,t},\\
-p^{\mathrm{ch}}_{s,t}&=p^{\mathrm{g,ch}}_{s,t}
-+p^{\mathrm{pv,ch}}_{s,t}+p^{\mathrm{dg,ch}}_{s,t},\\
-p^{\mathrm{dis}}_{s,t}&=\sum_{\ell\in\mathcal L_s}
-p^{\mathrm{dis}}_{s,\ell,t}.
-\end{align}
-\end{subequations}
-The load and PV balances are
-\begin{subequations}\label{eq:pcc_balance}
-\begin{align}
-p^{\mathrm{g,l}}_{s,t}+p^{\mathrm{pv,l}}_{s,t}
-+p^{\mathrm{dg,l}}_{s,t}+p^{\mathrm{dis}}_{s,t}
-&=d_{s,t}-u_{s,t},\label{eq:load_balance}\\
-p^{\mathrm{pv,l}}_{s,t}+p^{\mathrm{pv,ch}}_{s,t}
-+p^{\mathrm{curt}}_{s,t}&=r_{s,t}.\label{eq:pv_balance}
-\end{align}
-\end{subequations}
-Grid availability, peak demand, and aggregate diesel capacity satisfy
-\begin{subequations}\label{eq:source_limits}
-\begin{align}
-0\le p^{\mathrm g}_{s,t}&\le a_{s,t}\overline P^{\mathrm g},\qquad
-p^{\mathrm g}_{s,t}\le p^{\mathrm{pk}},\\
-0\le p^{\mathrm{dg}}_{s,t}&\le\overline P^{\mathrm{dg}},\label{eq:diesel_limit}\\
-0\le u_{s,t}&\le d_{s,t}(1-a_{s,t}).\label{eq:outage_shed}
-\end{align}
-\end{subequations}
-Equation~\eqref{eq:outage_shed} prohibits economic load shedding while the
-grid is available. The case study uses three 2-MW diesel modules, represented
-by $\overline P^{\mathrm{dg}}=6$ MW.
+\subsection{Storage Design and PCC Dispatch}
 
-Binary variables $b^{\mathrm{ch}}_{s,t}$ and
-$b^{\mathrm{dis}}_{s,t}$ prevent simultaneous charging and discharging:
-\begin{subequations}\label{eq:battery_power}
+The battery build, capacity, and duration limits are
 \begin{align}
-0\le p^{\mathrm{ch}}_{s,t}&\le P,quad
-p^{\mathrm{ch}}_{s,t}\le\overline P b^{\mathrm{ch}}_{s,t},\\
-0\le p^{\mathrm{dis}}_{s,t}&\le P,quad
-p^{\mathrm{dis}}_{s,t}\le\overline P b^{\mathrm{dis}}_{s,t},\\
-b^{\mathrm{ch}}_{s,t}+b^{\mathrm{dis}}_{s,t}&\le z.
+\underline P u^{\mathrm{es}}&\le P^{\mathrm{cap}}\le\overline P u^{\mathrm{es}},
+\label{eq:power_cap}\\
+\underline E u^{\mathrm{es}}&\le E^{\mathrm{cap}}\le\overline E u^{\mathrm{es}},
+\label{eq:energy_cap}\\
+h^{\min}P^{\mathrm{cap}}&\le E^{\mathrm{cap}}\le h^{\max}P^{\mathrm{cap}}.
+\label{eq:duration}
 \end{align}
-\end{subequations}
+Because there is one storage location, $u^{\mathrm{es}}$ is a build decision,
+not a network siting decision.
 
-\section{Carbon-Vintage Accounting}
-\label{sec:carbon}
-
-\subsection{Virtual Energy Layers}
-For each scenario, define
+Grid, PV, and diesel generation are split between direct load supply and
+battery charging. PCC and PV balances are
+\begin{align}
+P^{g,L}_{s,t}+P^{v,L}_{s,t}+P^{d,L}_{s,t}+P^{\mathrm{dc}}_{s,t}
+&=D_{s,t}-P^{\mathrm{shed}}_{s,t},
+\label{eq:pcc_balance}\\
+P^{v,L}_{s,t}+P^{v,B}_{s,t}+P^{\mathrm{curt}}_{s,t}
+&=V_{s,t}.
+\label{eq:pv_balance}
+\end{align}
+Resource and peak limits are
+\begin{align}
+P^{g,L}_{s,t}+P^{g,B}_{s,t}&\le a_{s,t}\overline P^g,
+\label{eq:grid_limit}\\
+P^{d,L}_{s,t}+P^{d,B}_{s,t}&\le\overline P^d,
+\label{eq:diesel_limit}\\
+P^{g,L}_{s,t}+P^{g,B}_{s,t}&\le P^{\mathrm{peak}}.
+\label{eq:peak_limit}
+\end{align}
+Load shedding is restricted to outages:
 \begin{equation}
-\mathcal L_s=\{0,\mathrm{pv},\mathrm{dg}\}
-\cup\{(\mathrm g,k):k\in\mathcal T\},
+0\le P^{\mathrm{shed}}_{s,t}\le D_{s,t}(1-a_{s,t}).
+\label{eq:outage_shedding}
+\end{equation}
+Thus, the optimizer cannot meet a carbon limit by dropping load while connected.
+
+Total charging and discharging are
+\begin{align}
+P^{\mathrm{ch}}_{s,t}&=P^{g,B}_{s,t}+P^{v,B}_{s,t}+P^{d,B}_{s,t},
+\label{eq:total_charge}\\
+P^{\mathrm{dc}}_{s,t}&=\sum_{k\in\mathcal K_s}P^{\mathrm{dc}}_{s,k,t}.
+\label{eq:total_discharge}
+\end{align}
+With binary mode variables $z^{\mathrm{ch}}_{s,t}$ and
+$z^{\mathrm{dc}}_{s,t}$,
+\begin{align}
+P^{\mathrm{ch}}_{s,t}&\le P^{\mathrm{cap}}, &
+P^{\mathrm{ch}}_{s,t}&\le\overline Pz^{\mathrm{ch}}_{s,t},
+\label{eq:charge_limit}\\
+P^{\mathrm{dc}}_{s,t}&\le P^{\mathrm{cap}}, &
+P^{\mathrm{dc}}_{s,t}&\le\overline Pz^{\mathrm{dc}}_{s,t},
+\label{eq:discharge_limit}\\
+z^{\mathrm{ch}}_{s,t}+z^{\mathrm{dc}}_{s,t}&\le u^{\mathrm{es}}.
+\label{eq:mode}
+\end{align}
+
+\subsection{Source- and Vintage-Resolved Carbon Accounting}
+
+The inventory is divided into virtual layers
+\begin{equation}
+\mathcal K_s=\{0,v,d\}\cup\{g_1,\ldots,g_T\},
 \label{eq:layers}
 \end{equation}
-where layer 0 is the initial inventory, the PV and diesel layers aggregate
-fixed-intensity charging, and $(\mathrm g,k)$ is the grid vintage created at
-hour $k$. Their fixed intensities are
-\begin{subequations}\label{eq:layer_intensity}
-\begin{align}
-\kappa_{s,0}&=\gamma^0,&
-\kappa_{s,\mathrm{pv}}&=0,\\
-\kappa_{s,\mathrm{dg}}&=\gamma^{\mathrm{dg}}/\eta^{\mathrm{ch}},&
-\kappa_{s,(\mathrm g,k)}&=\gamma_{s,k}/\eta^{\mathrm{ch}}.
-\end{align}
-\end{subequations}
-Dividing by charging efficiency assigns the carbon of input electricity to
-the smaller amount of energy retained in storage.
+where $0$, $v$, and $d$ denote initial, PV-charged, and diesel-charged
+inventory, while $g_k$ contains grid energy charged in interval $k$. These are
+accounting layers rather than physically separated battery compartments.
 
-The layer dynamics are
-\begin{align}
-e_{s,\ell,t+1}={}&(1-\sigma)e_{s,\ell,t}
-+\eta^{\mathrm{ch}}p^{\mathrm{add}}_{s,\ell,t}
--\frac{p^{\mathrm{dis}}_{s,\ell,t}}{\eta^{\mathrm{dis}}},
-\label{eq:layer_balance}
-\end{align}
-where
+Their fixed internal carbon intensities are
 \begin{equation}
-p^{\mathrm{add}}_{s,\ell,t}=\begin{cases}
-p^{\mathrm{pv,ch}}_{s,t},&\ell=\mathrm{pv},\\
-p^{\mathrm{dg,ch}}_{s,t},&\ell=\mathrm{dg},\\
-p^{\mathrm{g,ch}}_{s,t},&\ell=(\mathrm g,t),\\
+\gamma_{s,k}=
+\begin{cases}
+c^{\mathrm{init}},&k=0,\\
+0,&k=v,\\
+c^{d,\mathrm{CO_2}}/\eta^{\mathrm{ch}},&k=d,\\
+c_{s,k}/\eta^{\mathrm{ch}},&k=g_k.
+\end{cases}
+\label{eq:layer_intensity}
+\end{equation}
+Charging losses reduce stored energy but do not erase source-attributed carbon,
+which explains the division by $\eta^{\mathrm{ch}}$.
+
+Let internal layer additions be
+\begin{equation}
+q_{s,k,t}=
+\begin{cases}
+\eta^{\mathrm{ch}}P^{v,B}_{s,t}\Delta t,&k=v,\\
+\eta^{\mathrm{ch}}P^{d,B}_{s,t}\Delta t,&k=d,\\
+\eta^{\mathrm{ch}}P^{g,B}_{s,t}\Delta t,&k=g_t,\\
 0,&\text{otherwise}.
 \end{cases}
-\label{eq:layer_addition}
+\label{eq:additions}
 \end{equation}
-Each layer is nonnegative and cannot discharge more than its available energy.
-The aggregate state obeys
-\begin{equation}
-\underline{\mathrm{SOC}}E\le
-\sum_{\ell\in\mathcal L_s}e_{s,\ell,t}\le
-\overline{\mathrm{SOC}}E.
+With retention $\kappa=1-\sigma^{\mathrm{sd}}$, layer energy satisfies
+\begin{align}
+e_{s,k,t+1}&=\kappa e_{s,k,t}+q_{s,k,t}
+-\frac{P^{\mathrm{dc}}_{s,k,t}}{\eta^{\mathrm{dc}}}\Delta t,
+\label{eq:layer_energy}\\
+\frac{P^{\mathrm{dc}}_{s,k,t}}{\eta^{\mathrm{dc}}}\Delta t
+&\le\kappa e_{s,k,t}.
+\label{eq:available_energy}
+\end{align}
+Initial and aggregate SOC conditions are
+\begin{align}
+e_{s,0,1}&=\sigma^{\mathrm{init}}E^{\mathrm{cap}},
+&e_{s,k,1}&=0,\quad k\ne0,
+\label{eq:initial_layers}\\
+\underline\sigma E^{\mathrm{cap}}
+&\le\sum_ke_{s,k,t}\le\overline\sigma E^{\mathrm{cap}}.
 \label{eq:soc}
-\end{equation}
-Only the initial layer is populated at $t=0$:
-\begin{equation}
-e_{s,0,0}=\mathrm{SOC}^0E,\qquad e_{s,\ell,0}=0\quad(\ell\ne0).
-\label{eq:initial_layers}
-\end{equation}
-The terminal conditions are
-\begin{subequations}\label{eq:terminal}
-\begin{align}
-\sum_{\ell}e_{s,\ell,T}&=\mathrm{SOC}^0E,\\
-\sum_{\ell}\kappa_{s,\ell}e_{s,\ell,T}
-&\le\gamma^0\mathrm{SOC}^0E.
 \end{align}
-\end{subequations}
-The second condition prevents a scenario from satisfying its horizon budget by
-ending with a dirtier battery than it started with.
-
-\subsection{Delivered Carbon and Mixed Horizon Budget}
-Under carbon-vintage accounting, delivered carbon rate is
+The representative block returns to its initial energy and may not end with a
+dirtier inventory:
 \begin{align}
-m^{\mathrm L}_{s,t}={}&\gamma_{s,t}p^{\mathrm{g,l}}_{s,t}
-+\gamma^{\mathrm{dg}}p^{\mathrm{dg,l}}_{s,t}
-+\sum_{\ell\in\mathcal L_s}\kappa_{s,\ell}
-\frac{p^{\mathrm{dis}}_{s,\ell,t}}{\eta^{\mathrm{dis}}}.
-\label{eq:layered_carbon}
+\sum_ke_{s,k,T+1}&=\sigma^{\mathrm{init}}E^{\mathrm{cap}},
+\label{eq:terminal_energy}\\
+\sum_k\gamma_{s,k}e_{s,k,T+1}
+&\le c^{\mathrm{init}}\sigma^{\mathrm{init}}E^{\mathrm{cap}}.
+\label{eq:terminal_carbon}
 \end{align}
-The interval allowance is conditioned on grid availability:
-\begin{equation}
-\bar\gamma_{s,t}=\begin{cases}
-\bar\gamma^{\mathrm g},&a_{s,t}=1,\\
-\bar\gamma^{\mathrm o},&a_{s,t}=0.
-\end{cases}
-\label{eq:mixed_cap}
-\end{equation}
-Normal operation and emergency operation therefore enter one transparent
-energy-weighted budget:
-\begin{equation}
-\sum_{t\in\mathcal T}m^{\mathrm L}_{s,t}\Delta t
-\le\sum_{t\in\mathcal T}\bar\gamma_{s,t}
-(d_{s,t}-u_{s,t})\Delta t+\Xi_s,quad \Xi_s\ge0.
-\label{eq:horizon_cap}
-\end{equation}
-The reported excess rate is $\Xi_s$ divided by served energy; it is not the
-facility's absolute carbon intensity. The outage allowance is set to the diesel
-intensity in the main case so that routine decarbonization does not obstruct
-emergency supply.
 
-For the temporal-resolution ablation, an hourly alternative replaces
-\eqref{eq:horizon_cap} with
+Carbon delivered to the data center is
 \begin{equation}
-m^{\mathrm L}_{s,t}\le\bar\gamma_{s,t}(d_{s,t}-u_{s,t})+\Xi_{s,t}.
+C^L_{s,t}=c_{s,t}P^{g,L}_{s,t}
++c^{d,\mathrm{CO_2}}P^{d,L}_{s,t}
++\sum_k\gamma_{s,k}\frac{P^{\mathrm{dc}}_{s,k,t}}{\eta^{\mathrm{dc}}}.
+\label{eq:delivered_carbon}
+\end{equation}
+Charging carbon enters the layer ledger and is assigned to load only when the
+energy is discharged. This load-side compliance quantity is distinct from
+source-side emissions, which also include energy used for charging.
+
+\subsection{Carbon Limits and Benchmark Accounting}
+
+The applicable intensity limit is
+\begin{equation}
+\bar c_{s,t}=a_{s,t}\bar c^{\mathrm n}+(1-a_{s,t})\bar c^{\mathrm o}.
+\label{eq:applicable_cap}
+\end{equation}
+The main experiment imposes an hourly load-side budget:
+\begin{equation}
+C^L_{s,t}\le
+\bar c_{s,t}(D_{s,t}-P^{\mathrm{shed}}_{s,t})+\Xi_{s,t},
+\qquad \Xi_{s,t}\ge0.
 \label{eq:hourly_cap}
 \end{equation}
-The production experiment uses \eqref{eq:horizon_cap}.
-
-\subsection{Aggregate Source-Average Baseline}
-The controlled baseline retains every physical constraint above but replaces
-\eqref{eq:layered_carbon} in the compliance budget by
-\begin{align}
-m^{\mathrm A}_{s,t}={}&\gamma_{s,t}
-(p^{\mathrm{g,l}}_{s,t}+p^{\mathrm{g,ch}}_{s,t})\nonumber\\
-&+\gamma^{\mathrm{dg}}
-(p^{\mathrm{dg,l}}_{s,t}+p^{\mathrm{dg,ch}}_{s,t}).
-\label{eq:average_carbon}
-\end{align}
-Hence, source emissions are recognized when electricity enters the PCC or
-battery, and the battery's charging-time source is not carried into the later
-compliance calculation. The horizon-average intensity is
+A horizon-average benchmark replaces it by
 \begin{equation}
-\bar m_s^{\mathrm A}=
-\frac{\sum_t m^{\mathrm A}_{s,t}\Delta t}
-{\sum_t(d_{s,t}-u_{s,t})\Delta t}.
-\label{eq:average_intensity}
+\sum_tC^L_{s,t}\Delta t\le
+\sum_t\bar c_{s,t}(D_{s,t}-P^{\mathrm{shed}}_{s,t})\Delta t+\Xi_s.
+\label{eq:horizon_cap}
 \end{equation}
-This baseline is deliberately not given different costs, scenarios, terminal
-conditions, or reliability limits. Comparing \eqref{eq:layered_carbon} and
-\eqref{eq:average_carbon} therefore isolates the effect of carbon provenance.
 
-\section{Decision-Focused Scenario Generation}
-\label{sec:dfl}
-
-\subsection{Conditional Generator and Joint Training}
-Let $\xi$ collect the stochastic trajectories in one 48-h scenario and
-$c$ denote its context. A CVAE parameterizes
+The layered formulation is linear apart from build and mode binaries. A
+perfectly mixed benchmark tracks total energy $E_{s,t}$, carbon $M_{s,t}$, and
+average intensity $w_{s,t}$ through
 \begin{equation}
-z\sim\mathcal N(0,I),\qquad \widehat\xi=G_\phi(z,c),
+M_{s,t}=w_{s,t}E_{s,t},\qquad
+C^B_{s,t}=w_{s,t}P^{\mathrm{dc}}_{s,t}/\eta^{\mathrm{dc}}.
+\label{eq:average_model}
+\end{equation}
+These bilinear identities make the average-accounting benchmark nonconvex. It
+is used only to test whether discarded source and vintage information changes
+the reported design.
+
+\subsection{Compact Formulation}
+
+Let $\bm x_s$ collect all scenario-dependent variables and let
+$\Omega(\bm\xi_s)$ denote
+(\ref{eq:pcc_balance})--(\ref{eq:hourly_cap}). The deterministic equivalent is
+\begin{equation}
+\begin{aligned}
+\min_{\bm y,\{\bm x_s\}}\quad
+&I(\bm y)+\sum_{s\in\mathcal S}\rho_sC_s^{\mathrm{op}}(\bm x_s)\\
+\mathrm{s.t.}\quad
+&\bm y\in\mathcal Y,\\
+&(\bm y,\bm x_s)\in\Omega(\bm\xi_s),\quad s\in\mathcal S.
+\end{aligned}
+\label{eq:deterministic_equivalent}
+\end{equation}
+
+% =====================================================================
+\section{Decision-Focused Learning Methodology}
+\label{sec:methodology}
+
+\subsection{Learning Task and Scenario Generator}
+
+Let $\mathcal D^{\mathrm{tr}}$ be the historical training pool and let
+$K\ll|\mathcal D^{\mathrm{tr}}|$ be the number of scenarios affordable in the
+planning model. The learned support is
+\begin{equation}
+\widehat{\mathcal S}_\theta=
+\{\widehat{\bm\xi}_k=G_\theta(\bm z_k,\bm\omega_k)\}_{k=1}^K.
+\label{eq:generated_support}
+\end{equation}
+Context $\bm\omega$ contains cyclical day-of-year coordinates, weekend share,
+and mean temperature. Contexts and prior latent draws are fixed during
+fine-tuning, so changes in the downstream design arise from generator updates
+rather than resampling. The support also preserves the importance-corrected
+normal/outage probability mass.
+
+The CVAE encoder defines
+\begin{equation}
+q_\phi(\bm z\mid\bm x,\bm\omega)=
+\mathcal N(\bm\mu_\phi,\operatorname{diag}(\bm\sigma_\phi^2)),
 \label{eq:cvae}
 \end{equation}
-and is trained with a reconstruction/KL loss augmented by field and shape
-terms,
-\begin{equation}
-\mathcal L_{\mathrm{stat}}=
-\mathcal L_{\mathrm{rec}}+\beta\mathcal L_{\mathrm{KL}}
-+\mathcal L_{\mathrm{shape}}.
-\label{eq:stat_loss}
-\end{equation}
-The implemented joint experiment initializes $G_\phi$ randomly. Early epochs
-use only \eqref{eq:stat_loss}; thereafter statistical and decision losses are
-optimized together. Normalization parameters are fitted from the data and are
-not learned generator weights.
-
-For a generated support set $\widehat{\mathcal S}$, the planning oracle returns
-\begin{equation}
-\widehat x=x^*(\widehat{\mathcal S})
-=\argmin_{x,y}\ C(x,y;\widehat{\mathcal S}).
-\label{eq:generated_plan}
-\end{equation}
-The design $\widehat x$ is then fixed and redispatched on the corresponding
-real scenarios. A perfect-information design $x^*(\mathcal S)$ is also solved
-for the same training bag. The MILP solutions are detached; differentiation
-does not pass through the argmin map.
-
-\subsection{Directional Recourse Loss}
-Let $\widehat d$, $\widehat r$, and $\widehat\gamma$ denote generated demand,
-PV, and grid carbon. With scale $b_{s,t}=\max(d_{s,t},0.05)$, optimistic
-directions are
-\begin{subequations}\label{eq:directions}
+and its statistical objective is
 \begin{align}
-\delta^d_{s,t}&=\frac{\pos{d_{s,t}-\widehat d_{s,t}}}{b_{s,t}},\\
-\delta^r_{s,t}&=\frac{\pos{\widehat r_{s,t}-r_{s,t}}}{b_{s,t}}.
+L_{\mathrm{CVAE}}={}&L_{\mathrm{rec}}+\lambda_rL_{\mathrm{ramp}}
++\lambda_nL_{\mathrm{net}}+\lambda_pL_{\mathrm{peak}}
+\nonumber\\
+&+\lambda_cL_{\mathrm{carbon\mbox{-}spread}}
++\beta D_{\mathrm{KL}}(q_\phi\Vert\mathcal N(\bm0,\bm I)).
+\label{eq:cvae_loss}
 \end{align}
-\end{subequations}
-For carbon, define a smooth cap-relative pressure
+Only demand, available PV, and grid carbon intensity are differentiable
+decision channels. Workload and the calendar tariff are restored from legal
+templates after decoding. Grid availability is copied as a detached exogenous
+contingency, preventing the generator from manufacturing price arbitrage or
+changing outage occurrence.
+
+\subsection{Forward Planning and Fixed-Design Recourse}
+
+The generated support induces the design
 \begin{equation}
-\psi(\gamma)=\tau\log\left[1+
-\exp\left(\frac{\gamma-\bar\gamma^{\mathrm g}}{\tau}\right)\right],
-\quad \tau=\max(0.05,0.1\bar\gamma^{\mathrm g}).
-\label{eq:carbon_pressure}
+\widehat{\bm y}_\theta\in\argmin_{\bm y}
+I(\bm y)+Q(\bm y;\widehat{\mathcal S}_\theta).
+\label{eq:forward_plan}
 \end{equation}
-Only grid-connected intervals contribute. Let $H_{s,t,k}$ be the detached
-derivative of compliance carbon in delivery hour $t$ with respect to grid
-intensity in source hour $k$. For layered accounting,
+Only its build, power, and energy components are transferred to real scenario
+$s$:
 \begin{equation}
-H_{s,t,k}=\mathbb I[k=t]p^{\mathrm{g,l}}_{s,t}
-+\frac{p^{\mathrm{dis}}_{s,(\mathrm g,k),t}}
-{\eta^{\mathrm{ch}}\eta^{\mathrm{dis}}};
-\label{eq:vintage_exposure}
+\bm x_s^R\in\argmin_{\bm x_s}
+Q(\widehat{\bm y}_\theta,\bm x_s;\bm\xi_s).
+\label{eq:fixed_recourse}
 \end{equation}
-for the average baseline it is
-$H_{s,t,k}=\mathbb I[k=t]p^{\mathrm g}_{s,t}$.
-The grid-carbon direction in compliance hour $t$ is
+All dispatch, battery-mode, layer-inventory, curtailment, shedding, and carbon
+variables are reoptimized. Let $z^L_{s,t}$ and $z^C_{s,t}$ be the hourly
+shedding and carbon excess returned by this solve. These quantities and all
+MILP decisions are detached constants: they identify decision-critical errors
+without defining a gradient through the optimizer.
+
+\subsection{Infeasibility-Penalizing Loss}
+
+For generated trajectories $\widehat D$, $\widehat V$, and $\widehat c$, define
 \begin{equation}
-\delta^\gamma_{s,t}=\frac{1}{\bar\gamma^{\mathrm g}}
-\pos{
-\frac{\sum_k a_{s,t}a_{s,k}H_{s,t,k}
-[\psi(\gamma_{s,k})-\psi(\widehat\gamma_{s,k})]}
-{\sum_k a_{s,t}a_{s,k}H_{s,t,k}+\epsilon}}.
+d_{s,t}=\max(|D_{s,t}|,\varepsilon_D),\qquad
+D^L_{s,t}=\max(D_{s,t}-z^L_{s,t},\varepsilon_D),
+\label{eq:loss_scales}
+\end{equation}
+and optimistic load and PV directions
+\begin{equation}
+r^D_{s,t}=\frac{\left[D_{s,t}-\widehat D_{s,t}\right]_{+}}{d_{s,t}},\qquad
+r^V_{s,t}=\frac{\left[\widehat V_{s,t}-V_{s,t}\right]_{+}}{d_{s,t}}.
+\label{eq:load_pv_direction}
+\end{equation}
+
+Carbon is intertemporal because intensity in charging hour $k$ may affect
+compliance in discharge hour $t$. Let $H^R_{s,t,k}$ be the detached exposure of
+delivered carbon in hour $t$ to grid intensity in hour $k$, and define
+\begin{equation}
+\psi(c)=\tau\log\left(1+\exp((c-\bar c^{\mathrm n})/\tau)\right).
+\label{eq:pressure}
+\end{equation}
+The exposure-weighted carbon direction is
+\begin{equation}
+r^C_{s,t}=
+\frac{\left[\sum_kH^R_{s,t,k}[\psi(c_{s,k})-\psi(\widehat c_{s,k})]\right]_{+}}
+{\bar c^{\mathrm n}\max(\sum_kH^R_{s,t,k},\varepsilon_H)}.
 \label{eq:carbon_direction}
 \end{equation}
-This maps an error at a charging hour to the later hour in which its grid
-vintage is actually discharged. The availability masks are essential:
-grid-carbon forecasts have no physical role in an outage compliance interval,
-for which the separate allowance $\bar\gamma^{\mathrm o}$ applies.
+This smooth pressure retains a correction near the cap, where a hard hinge may
+otherwise be flat.
 
-Let $\omega^u_{s,t}$ be normalized recourse shedding severity and
-$\omega^\gamma_s$ be carbon-excess tons normalized by served energy. With
-$h(v)=\operatorname{softplus}(m+v)-\operatorname{softplus}(m)$, the
-infeasibility-penalty loss is
+For $h_m(r)=\operatorname{softplus}(m+r)-\operatorname{softplus}(m)$,
 \begin{align}
-\mathcal L_{\mathrm{IPL}}={}&w_d\E[\omega^u h(\delta^d)]
-+w_r\E[\omega^u h(\delta^r)]
-+w_\gamma\E[\omega^\gamma h(\delta^\gamma)].
+L_D^{\mathrm{IPL}}&=\frac1{KT}\sum_{s,t}
+\frac{z^L_{s,t}}{d_{s,t}}h_m(r^D_{s,t}),
+\label{eq:ipl_load}\\
+L_V^{\mathrm{IPL}}&=\frac1{KT}\sum_{s,t}
+\frac{z^L_{s,t}}{d_{s,t}}h_m(r^V_{s,t}),
+\label{eq:ipl_pv}\\
+L_C^{\mathrm{IPL}}&=\frac1{KT}\sum_{s,t}
+\frac{z^C_{s,t}}{D^L_{s,t}}h_m(r^C_{s,t}),
+\label{eq:ipl_carbon}
+\end{align}
+and
+\begin{equation}
+L_{\mathrm{IPL}}=w_DL_D^{\mathrm{IPL}}+w_VL_V^{\mathrm{IPL}}
++w_CL_C^{\mathrm{IPL}}.
 \label{eq:ipl}
-\end{align}
-The optimality-preserving loss fixes the perfect-information design and
-redispatches it on generated scenarios. It uses the reverse directions
-$\pos{\widehat d-d}$, $\pos{r-\widehat r}$, and the reverse of
-\eqref{eq:carbon_direction}:
-\begin{equation}
-\mathcal L_{\mathrm{OPL}}=
-w_d\E[\widetilde\omega^u h(\widetilde\delta^d)]
-+w_r\E[\widetilde\omega^u h(\widetilde\delta^r)]
-+w_\gamma\E[\widetilde\omega^\gamma h(\widetilde\delta^\gamma)].
-\label{eq:opl}
 \end{equation}
-The decision loss and joint objective are
-\begin{subequations}\label{eq:joint_loss}
-\begin{align}
-\mathcal L_{\mathrm{DFL}}&=\alpha\mathcal L_{\mathrm{IPL}}
-+(1-\alpha)\mathcal L_{\mathrm{OPL}},\\
-\mathcal L&=\mathcal L_{\mathrm{stat}}
-+\lambda_{\mathrm{eff}}\mathcal L_{\mathrm{DFL}}.
-\end{align}
-\end{subequations}
-The implementation rescales $\lambda_{\mathrm{eff}}$ so that the DFL decoder
-gradient is a prescribed fraction of the statistical gradient, subject to
-configured lower and upper bounds. This prevents either term from disappearing
-solely because of units.
+Gradient descent therefore increases underestimated demand, decreases
+overestimated PV, and increases underestimated carbon pressure only where the
+generated-support design violates real recourse constraints.
 
-\subsection{Checkpoint Selection and Evaluation}
-Validation holds the scenario bag, contexts, and latent supports fixed across
-epochs. Because carbon performance is the target contribution, checkpoints are
-ranked lexicographically by
+\subsection{Optimality-Preserving Loss}
+
+IPL alone can make every generated scenario severe. A perfect-information
+design for the matched real scenario bag is therefore computed as
 \begin{equation}
-\left(
-\mathbb I[f^{\mathrm{shed}}>\varepsilon^{\mathrm{shed}}],
-\pos{f^{\mathrm{shed}}-\varepsilon^{\mathrm{shed}}},
-f^{\mathrm{CO_2}},
-R
-\right),
-\label{eq:checkpoint_score}
+\bm y^{\mathrm{PI}}\in\argmin_{\bm y}
+I(\bm y)+Q(\bm y;\mathcal S^R).
+\label{eq:pi_design}
 \end{equation}
-where $f^{\mathrm{shed}}$ is the fixed-validation shedding fraction,
-$f^{\mathrm{CO_2}}$ is carbon excess per served MWh, and normalized decision
-regret is
+This design is fixed and re-dispatched against the generated support. If the
+generated constraints cause shedding or carbon excess, they have excluded a
+design known to be adequate for the real bag. The optimality-preserving loss
+uses reverse directions
 \begin{equation}
-R=\frac{Q(\widehat x;\mathcal V)-Q(x^{\mathrm{PI}};\mathcal V)}
-{|Q(x^{\mathrm{PI}};\mathcal V)|+\epsilon}.
-\label{eq:regret}
+\widetilde r^D_{s,t}=
+\frac{\left[\widehat D_{s,t}-D_{s,t}\right]_{+}}{d_{s,t}},\qquad
+\widetilde r^V_{s,t}=
+\frac{\left[V_{s,t}-\widehat V_{s,t}\right]_{+}}{d_{s,t}},
+\label{eq:opl_directions}
 \end{equation}
-Thus, a lower-carbon checkpoint is accepted only after satisfying the explicit
-reliability guardrail. Final reporting uses an untouched test split and exact
-fixed-design recourse. The no-storage value is
+and the exposure-weighted reverse of (\ref{eq:carbon_direction}). Substituting
+the violation severities obtained by dispatching $\bm y^{\mathrm{PI}}$ defines
+$L_{\mathrm{OPL}}$. It reduces excessive demand and carbon predictions and
+increases excessively low PV predictions only where they reject the reference
+design.
+
+The combined decision loss is
 \begin{equation}
-V^{\mathrm{ES}}=Q(0;\mathcal T^{\mathrm{test}})
--Q(\widehat x;\mathcal T^{\mathrm{test}}).
-\label{eq:storage_value}
+L_{\mathrm{DFL}}=\alpha L_{\mathrm{IPL}}+(1-\alpha)L_{\mathrm{OPL}},
+\qquad 0\le\alpha\le1.
+\label{eq:dfl_loss}
 \end{equation}
+This construction adapts the feasibility/optimality logic of
+\cite{Mandi2025} to two-stage recourse; it is not a derivative of the MILP value
+function.
+
+\subsection{Gradient Balancing and Training}
+
+The total fine-tuning objective is
+\begin{equation}
+L_{\mathrm{total}}=w_{\mathrm{stat}}L_{\mathrm{CVAE}}
++\lambda_{\mathrm{eff}}L_{\mathrm{DFL}}.
+\label{eq:total_loss}
+\end{equation}
+Let $g_{\mathrm{stat}}$ and $g_{\mathrm{DFL}}$ be decoder-gradient norms. The
+detached effective weight is
+\begin{equation}
+\lambda_{\mathrm{eff}}=\lambda\operatorname{clip}\left(
+r_g\frac{g_{\mathrm{stat}}}{\max(g_{\mathrm{DFL}},\varepsilon_g)},
+b_{\min},b_{\max}\right).
+\label{eq:gradient_balance}
+\end{equation}
+Only decoder gradients are compared because direct decision feedback reaches
+the model through the decoder.
 
 \begin{algorithm}[t]
-\caption{Joint CVAE--DFL Training}
+\caption{Feasibility-aware CVAE fine-tuning}
 \label{alg:training}
 \begin{algorithmic}[1]
-\State Fit the scenario codec and initialize $G_\phi$ randomly.
-\State Fix validation scenarios, support contexts, and latent vectors.
-\For{$e=1,\ldots,N_{\mathrm{ep}}$}
-  \State Update $G_\phi$ using $\mathcal L_{\mathrm{stat}}$.
-  \If{$e$ is after the warm-up and is a DFL epoch}
-    \State Solve planning on generated scenarios.
-    \State Redispatch the design on real scenarios.
-    \State Solve/lookup the perfect-information reference.
-    \State Form \eqref{eq:ipl}--\eqref{eq:joint_loss} and update $G_\phi$.
-  \EndIf
-  \If{$e$ is a validation epoch}
-    \State Update the incumbent checkpoint using \eqref{eq:checkpoint_score}.
-  \EndIf
+\Require Pretrained CVAE, training/validation pools, planning oracle, support size $K$
+\State Fix support contexts, prior latents, contingencies, and weights
+\For{each fine-tuning epoch}
+  \State Decode $\widehat{\mathcal S}_\theta$ and solve (\ref{eq:forward_plan})
+  \State Re-dispatch $\widehat{\bm y}_\theta$ on matched real scenarios
+  \State Solve (\ref{eq:pi_design}) and dispatch it on generated scenarios
+  \State Form $L_{\mathrm{IPL}}$, $L_{\mathrm{OPL}}$, and $L_{\mathrm{DFL}}$
+  \State Evaluate $L_{\mathrm{CVAE}}$ on an independent reconstruction batch
+  \State Balance decoder gradients and update $\theta$
+  \State Evaluate and rank the fixed support on validation data
 \EndFor
-\State Restore and save the best fixed-validation checkpoint.
+\State Restore the best validation checkpoint and return its $K$ scenarios
 \end{algorithmic}
 \end{algorithm}
 
-\section{Case-Study Configuration}
+Reliability is a checkpoint guardrail. Among checkpoints below a shedding
+tolerance, lower carbon excess is preferred and exact decision regret breaks
+ties. The pretrained model is a candidate at epoch $-1$, so fine-tuning is kept
+only when it improves the fixed validation criterion.
+
+\subsection{Out-of-Sample Metrics}
+
+On common test support $\mathcal S^{\mathrm{te}}$, define
+\begin{align}
+C^{\mathrm{PI}}&=\min_{\bm y}I(\bm y)+Q(\bm y;\mathcal S^{\mathrm{te}}),
+\label{eq:test_pi}\\
+C_m&=I(\bm y_m)+Q(\bm y_m;\mathcal S^{\mathrm{te}}),
+\label{eq:test_cost}\\
+R_m&=\frac{C_m-C^{\mathrm{PI}}}{|C^{\mathrm{PI}}|+10^{-6}}.
+\label{eq:regret}
+\end{align}
+Regret is detached and used only for evaluation. Storage value relative to the
+same no-storage reference is $V_m=C^0-C_m$. Cost is reported together with
+shedding, carbon excess, curtailment, and installed capacities.
+
+% =====================================================================
+\section{Case Study}
 \label{sec:case}
-The processed data contain 182 48-h scenarios per split. Facility demand is a
-calibrated workload/PUE construction rather than a metered data-center trace;
-it ranges from approximately 7.46 to 10.22 MW. The PV trajectory at the source
-bus is normalized to a 5-MW installation. Table~\ref{tab:parameters} lists the
-principal configuration values used by the current implementation.
+
+\subsection{Data and Experimental Setup}
+
+The study uses nonoverlapping 48-hour windows constructed from three years of
+load, PV, temperature, tariff, and grid-carbon data. The active PCC reduction
+retains the PV shape at the source feeder bus but synthesizes a 10-MW-class data
+center trajectory from a workload proxy and temperature-dependent power-usage
+effectiveness. Carbon trajectories remain intact 48-hour blocks and are
+permuted only within season and split. Training, validation, and test sets are
+disjoint.
+
+Contiguous one- to four-hour outages are injected into a subset of windows so
+small learning batches observe reliability events. Importance weights restore
+an assumed physical outage probability of approximately $0.71\%$ per 48-hour
+window. Outage timing is independent of load, PV, and carbon and is therefore a
+stress-test assumption rather than a measured joint distribution.
 
 \begin{table}[t]
-\caption{Principal Case-Study Parameters}
-\label{tab:parameters}
 \centering
-\begin{tabular}{ll}
+\caption{Principal system and planning parameters}
+\label{tab:parameters}
+\begin{tabular}{@{}lr@{}}
 \toprule
-Parameter & Value\\
+Parameter & Value \\
 \midrule
-Horizon and resolution & 48 h, 1 h\\
-Generated supports / decision batch & 8 / 12\\
-Fixed validation scenarios & 16\\
-PV capacity & 5 MW\\
-Grid import limit & 15 MW\\
-Diesel capacity and intensity & 6 MW, 0.72 tCO$_2$/MWh\\
-Normal / outage carbon allowance & 0.30 / 0.72 tCO$_2$/MWh\\
-Carbon-excess price & \$500/tCO$_2$\\
-Load-shedding penalty & \$10,000/MWh\\
-Battery charge/discharge efficiency & 0.95 / 0.95\\
-Battery power range & 0.20--7.50 MW\\
-Battery energy range & 0.50--60.0 MWh\\
-Duration range & 1--8 h\\
-DFL epochs / warm-up & 40 / 10\\
-Carbon directional weight & 2\\
-Reliability checkpoint tolerance & $10^{-4}$\\
+Scenario horizon/resolution & 48 h/1 h \\
+Mean/maximum demand & 8.477/10.224 MW \\
+PV capacity & 5 MW \\
+Grid-import limit & 15 MW \\
+Backup-generator capacity & 6 MW \\
+Battery power bound & 0--7.5 MW \\
+Battery energy bound & 0--60 MWh \\
+Initial/minimum/maximum SOC & 0.50/0.10/0.90 \\
+Charge/discharge efficiency & 0.95/0.95 \\
+Normal/outage carbon limit & 0.28/0.66 tCO$_2$/MWh \\
+Planning support size & 8 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The main comparison is a two-formulation ablation:
-\begin{enumerate}
-\item \emph{Layered PCC}: compliance carbon is given by
-\eqref{eq:layered_carbon}.
-\item \emph{Average PCC}: compliance carbon is given by
-\eqref{eq:average_carbon}.
-\end{enumerate}
-Both runs use the same random seed, generator architecture, training schedule,
-support count, scenario weights, costs, solver tolerances, and test scenarios.
-For the final comparison, designs trained under both accounting rules are
-cross-evaluated with the layered ledger; otherwise, each method would report
-carbon excess under a different definition and the carbon columns would not be
-comparable.
-The comparison shall report battery MW/MWh, total cost, investment cost,
-operating cost, carbon-excess cost and tons, served energy, load shedding,
-storage value, and normalized regret. This protocol prevents a change in
-scenario selection or reliability assumptions from being attributed to carbon
-accounting.
+The CVAE uses a 16-dimensional latent space and two 256-unit hidden layers in
+each network. It is pretrained for 300 epochs and fine-tuned for 45 epochs. The
+principal configuration uses eight fixed decision anchors, an independent
+32-scenario reconstruction batch, $\alpha=0.5$, and decoder-gradient target
+ratio $r_g=0.1$. Training planning uses a $1\%$ relative gap; final evaluation
+uses the tighter oracle setting.
+
+\subsection{Compared Methods and Metrics}
+
+The comparison includes random, K-means, farthest-point, and aggregate observed
+scenario supports; CVAE-only predict-then-optimize; IPL-only; OPL-only; and the
+full DFL method. Direct optimization on the common test support is used only as
+the perfect-information regret reference. All methods use the same support size
+and their designs are re-dispatched on the same test scenarios.
 
 \begin{table*}[t]
-\caption{Carbon-Accounting Ablation on the Common Test Set}
-\label{tab:carbon_ablation}
 \centering
-\begin{tabular}{lcccccc}
+\caption{Out-of-sample planning performance on a common test set}
+\label{tab:main_results}
+\begin{tabular}{@{}lrrrrrrr@{}}
 \toprule
-Method & Battery MW & Battery MWh & Cost (\$) & Shed (MWh) & Excess (tCO$_2$) & Regret\\
+Method & $P^{\mathrm{cap}}$ & $E^{\mathrm{cap}}$ & Annual cost & Regret
+& Shedding & Carbon excess & Storage value \\
+& (MW) & (MWh) & (\$) & (\%) & (MWh) & (tCO$_2$) & (\$) \\
 \midrule
-Average PCC & -- & -- & -- & -- & -- & --\\
-Layered PCC & -- & -- & -- & -- & -- & --\\
+Random & -- & -- & -- & -- & -- & -- & -- \\
+K-means & -- & -- & -- & -- & -- & -- & -- \\
+Farthest & -- & -- & -- & -- & -- & -- & -- \\
+Aggregate & -- & -- & -- & -- & -- & -- & -- \\
+CVAE-only & -- & -- & -- & -- & -- & -- & -- \\
+IPL-only & -- & -- & -- & -- & -- & -- & -- \\
+OPL-only & -- & -- & -- & -- & -- & -- & -- \\
+Full DFL & -- & -- & -- & -- & -- & -- & -- \\
+Perfect information & -- & -- & -- & 0 & -- & -- & -- \\
 \bottomrule
 \end{tabular}
 \end{table*}
 
+% TODO: Populate from multi-seed evaluation artifacts. Report mean and standard
+% deviation and distinguish incumbents from certified bounds where necessary.
+
+The result discussion will answer whether decision-focused training changes the
+installed design, whether any cost reduction is obtained at the expense of
+physical violations, and whether improvements exceed both seed variability and
+the uncertainty implied by solver gaps.
+
+\subsection{Carbon-Accounting and Learning Ablations}
+
+Four matched models compare layered/hourly, layered/horizon, average/hourly,
+and average/horizon accounting. Identical data, weights, costs, and design
+bounds must be used.
+
+\begin{table}[t]
+\centering
+\caption{Effect of carbon accounting and cap scope}
+\label{tab:carbon_ablation}
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+Accounting & Scope & $P^{\mathrm{cap}}$ & $E^{\mathrm{cap}}$ & Excess \\
+& & (MW) & (MWh) & (tCO$_2$) \\
+\midrule
+Layered & Hourly & -- & -- & -- \\
+Layered & Horizon & -- & -- & -- \\
+Average & Hourly & -- & -- & -- \\
+Average & Horizon & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% TODO: Current t1--t4 YAML files are cost/DFL sensitivities, not the four
+% accounting-scope combinations. Create matched configurations first.
+
+The learning ablation varies $\alpha$, removes gradient balancing, and changes
+support size. Planning sensitivities vary the normal carbon limit, battery
+capital cost, and outage duration. Results should include means and standard
+deviations over seeds. A representative 48-hour dispatch figure should show
+grid intensity, delivered intensity, SOC, charging source, and discharge by
+carbon layer to explain rather than merely report design differences.
+
+\subsection{Computational Performance and Limitations}
+
+Computational reporting includes forward-planning, fixed-design recourse, and
+perfect-information times; solver calls per epoch; and final optimality gaps.
+The current study cannot support conclusions about feeder congestion or
+multi-location siting. Its demand is calibrated rather than metered, outage
+timing is simulated independently of weather, and the directional DFL loss is
+not the derivative of the MILP value function.
+
+% =====================================================================
 \section{Conclusion}
-This paper has formulated grid-connected data-center storage planning with an
-exact linear carbon-vintage ledger and a mixed normal/outage carbon budget. The
-joint CVAE--DFL method uses exact recourse severities without differentiating
-through the mixed-integer solver, and its carbon loss is restricted to hours in
-which grid-carbon forecasts are physically relevant. The controlled
-source-average baseline enables the effect of carbon provenance to be measured
-without changing system physics or training data. Quantitative conclusions
-should be completed after both formulations have been trained and evaluated on
-the common test set in Table~\ref{tab:carbon_ablation}.
+\label{sec:conclusion}
 
-\begin{thebibliography}{3}
+This paper formulated carbon-aware battery planning for a data center behind a
+single PCC. The formulation jointly represents annualized cost, demand charges,
+PV and diesel dispatch, outage-only load shedding, and load-side carbon limits.
+Virtual inventory layers retain the source and charging-time intensity of
+stored electricity while preserving the aggregate physical behavior of one
+battery.
 
-\bibitem{Donti2017TaskBased}
-P. L. Donti, B. Amos, and J. Z. Kolter, ``Task-based end-to-end model
-learning in stochastic optimization,'' in \emph{Proc. Adv. Neural Inf.
-Process. Syst.}, 2017, pp. 5484--5494.
+A feasibility-aware decision-focused method was developed to learn a compact
+scenario support. It fixes the design obtained from generated scenarios and
+evaluates it with optimal recourse on real scenarios. Infeasibility and
+optimality-preserving losses use physical violations to correct optimistic and
+overly conservative trajectories. Because all mixed-integer decisions and
+severities are detached, the method avoids differentiating through the solver
+while retaining a gradient path to generated demand, PV, and carbon.
 
-\bibitem{Kingma2014VAE}
-D. P. Kingma and M. Welling, ``Auto-encoding variational Bayes,'' in
-\emph{Proc. Int. Conf. Learn. Represent.}, 2014.
+% TODO: Insert quantitative findings after the result tables are populated.
 
-\bibitem{chen2025copf}
-X. Chen, A. Sun, W. Shi, and N. Li, ``Carbon-aware optimal power flow,''
-\emph{IEEE Trans. Power Syst.}, vol. 40, no. 4, pp. 3090--3104, Jul. 2025.
+Future work will extend the formulation to network-constrained multi-site
+planning, correlated weather-driven outages, flexible computing workloads, and
+longer horizons with inter-block storage states.
 
-\end{thebibliography}
+\section*{Acknowledgements}
+% Add funding and non-author contributions.
 
+\section*{CRediT authorship contribution statement}
+Author Name: Conceptualization, Methodology, Software, Validation,
+Writing--original draft.
+
+\section*{Declaration of competing interest}
+The authors declare that they have no known competing financial interests or
+personal relationships that could have appeared to influence the work reported
+in this paper.
+
+\section*{Data availability}
+The processed data, configurations, and source code used to reproduce the study
+will be made available with the published article.
+
+\bibliographystyle{elsarticle-num}
+\bibliography{main_elsevier}
 \end{document}
