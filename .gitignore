@@ -33,3 +33,7 @@ runs/
 # Local helper binaries and logs
 curl.exe
 *.log
+
+# macOS resource forks and downloaded-file metadata
+._*
+*:Zone.Identifier
