@@ -308,6 +308,14 @@ def main() -> None:
         help="base YAML; all non-learning-objective settings are inherited",
     )
     parser.add_argument(
+        "--suite-label",
+        default=None,
+        help=(
+            "short output-directory label; defaults to the config filename. "
+            "Use this on Windows when TensorBoard event paths would be too long"
+        ),
+    )
+    parser.add_argument(
         "--variants",
         nargs="+",
         default=list(DEFAULT_VARIANTS),
@@ -378,7 +386,14 @@ def main() -> None:
     )
     variants = _parse_variants(args.variants)
     seeds = _unique(args.seeds or [int(base["seed"])])
-    label = _config_label(config_path)
+    label = args.suite_label or _config_label(config_path)
+    allowed_label_characters = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    )
+    if not label or any(
+        character not in allowed_label_characters for character in label
+    ):
+        parser.error("--suite-label may contain only letters, digits, '-' and '_'")
     suite_root = (
         project_root / "outputs" / "baselines" / "learning_objective" / label
     ).resolve()
