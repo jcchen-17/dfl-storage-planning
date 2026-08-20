@@ -354,7 +354,9 @@ class SinglePCCPlanningOracle:
             raise TypeError("The isolated single-PCC worker returned an invalid result.")
         return result
 
-    def _configure_model(self, model: object) -> None:
+    def _configure_model(
+        self, model: object, *, fixed_design: StorageDesign | None
+    ) -> None:
         pcfg = self.planning
         if not pcfg.verbose_solver:
             model.hideOutput()
@@ -367,8 +369,24 @@ class SinglePCCPlanningOracle:
                 model.setParam("limits/memory", float(pcfg.solver_memory_limit_mb))
             except KeyError:
                 pass
+        # Old PlanningConfig instances may be unpickled by isolated workers
+        # while a run launched before this option was introduced is still
+        # active. getattr keeps those runs on their original thread budget.
+        joint_threads = getattr(pcfg, "joint_solver_threads", None)
+        solver_threads = (
+            int(joint_threads)
+            if fixed_design is None and joint_threads is not None
+            else int(pcfg.solver_threads)
+        )
+        if solver_threads <= 0:
+            parameter = (
+                "joint_solver_threads"
+                if fixed_design is None and joint_threads is not None
+                else "solver_threads"
+            )
+            raise ValueError(f"planning.{parameter} must be positive.")
         try:
-            model.setParam("parallel/maxnthreads", int(pcfg.solver_threads))
+            model.setParam("parallel/maxnthreads", solver_threads)
         except KeyError:
             pass
         apply_search_strategy(model, pcfg)
@@ -392,7 +410,7 @@ class SinglePCCPlanningOracle:
         retention = 1.0 - float(pcfg.self_discharge)
         bus = self.feeder.root
         model, quicksum = new_model("single_pcc_storage_planning", pcfg.solver_backend)
-        self._configure_model(model)
+        self._configure_model(model, fixed_design=fixed_design)
 
         site = model.addVar(vtype="B", name=f"site[{bus}]")
         pcap = model.addVar(lb=0.0, ub=pcfg.max_power_mw, name=f"pcap[{bus}]")

@@ -195,6 +195,11 @@ class PlanningConfig:
     solver_relative_gap: float
     solver_threads: int
     verbose_solver: bool
+    # Optional thread budget for joint capacity-planning solves (no fixed
+    # storage design). Fixed-design per-scenario recourse solves continue to
+    # use solver_threads so parallel workers do not oversubscribe the CPU.
+    # None preserves the historical behavior and uses solver_threads for both.
+    joint_solver_threads: int | None = None
     # Budget for the no-storage bootstrap that seeds each solve. Zero selects
     # max(60 s, 30% of solver_time_limit_seconds). The bootstrap is cached per
     # scenario set, so this is paid once per distinct scenario set, not per solve.

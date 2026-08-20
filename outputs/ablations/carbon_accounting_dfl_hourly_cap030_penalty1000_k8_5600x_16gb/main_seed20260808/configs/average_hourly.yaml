@@ -103,10 +103,10 @@ planning:
   solver_time_limit_seconds: 300
   solver_backend: gurobi
   solver_relative_gap: 0.001
-  solver_threads: 3
+  solver_threads: 4
   solver_emphasis: feasibility
   solver_aggressive_heuristics: true
-  solver_max_parallel_workers: 2
+  solver_max_parallel_workers: 6
   solver_memory_limit_mb: 4500.0
   verbose_solver: false
 costs:
