@@ -322,7 +322,14 @@ class SinglePCCPlanningOracle:
             "warm_start_cached": True,
             "warm_start_values": None,
         }
-        with tempfile.TemporaryDirectory(prefix="storage_dfl_pcc_") as directory:
+        # Windows may keep a just-read pickle locked briefly (for example by an
+        # antivirus/indexer). The worker result is already materialized before
+        # cleanup, so a transient cleanup failure must not abort a multi-hour
+        # training run. Any leftover directory remains confined to the OS temp
+        # area and can be reclaimed later.
+        with tempfile.TemporaryDirectory(
+            prefix="storage_dfl_pcc_", ignore_cleanup_errors=True
+        ) as directory:
             root = Path(directory)
             input_path = root / "input.pkl"
             output_path = root / "output.pkl"
