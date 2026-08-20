@@ -4,6 +4,7 @@ import json
 import csv
 import hashlib
 import os
+import sys
 import time
 from dataclasses import asdict, dataclass, replace
 from math import isfinite
@@ -90,8 +91,8 @@ class ArtifactPaths:
         return self.root / "normalization.json"
 
     @property
-    def tensorboard(self) -> Path:
-        return self.root / "tensorboard"
+    def swanlab(self) -> Path:
+        return self.root / "swanlab"
 
 
 def _json_safe(value: Any, path: str, offenders: list[str]) -> Any:
@@ -155,42 +156,69 @@ def _read_json(path: Path) -> Any:
         return json.load(stream)
 
 
-def _summary_writer(
+class _SwanLabWriter:
+    """Expose the minimal scalar-logger interface used by the training loops."""
+
+    def __init__(self, run) -> None:
+        self.run = run
+
+    def add_scalar(self, tag: str, value: float, step: int) -> None:
+        self.run.log({tag: float(value)}, step=int(step))
+
+    def flush(self) -> None:
+        """Match the scalar-writer API expected by the training loops.
+
+        SwanLab sends metrics from ``run.log`` and finalizes pending uploads in
+        ``finish``; unlike TensorBoard's writer, it has no separate flush call.
+        """
+
+    def close(self) -> None:
+        self.run.finish()
+
+
+def _swanlab_writer(
     path: Path,
     enabled: bool,
     config: ExperimentConfig,
     *,
-    timestamped: bool = True,
+    experiment_name: str,
+    group: str,
 ):
-    """Open a TensorBoard writer in a directory unique to this run.
-
-    TensorBoard treats a directory as one run and merges every event file it
-    holds, so writing successive runs to a fixed path drew them as a single
-    series whose step counter restarted at zero each time.  A timestamped leaf
-    separates them in the run picker.
-
-    The leaf is only the timestamp, not the config name: the config already
-    determines ``output_dir``, so its name is present further up the path, and
-    the event file names TensorBoard generates are long enough that a second
-    label risks the 260-character path limit on Windows.
-    """
+    """Create one SwanLab experiment while retaining the trainer writer API."""
 
     if not enabled:
         return None
+    # SwanLab's startup/status messages contain Unicode symbols.  Legacy
+    # Windows PowerShell commonly exposes a GBK stream, which otherwise raises
+    # UnicodeEncodeError before the first metric is logged.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
     try:
-        from torch.utils.tensorboard import SummaryWriter
+        import swanlab
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "TensorBoard is not installed. Run `python -m pip install tensorboard`."
+            "SwanLab is not installed. Run `python -m pip install swanlab`."
         ) from exc
-    log_dir = path / time.strftime("%Y%m%d-%H%M%S") if timestamped else path
-    writer = SummaryWriter(log_dir=str(log_dir))
-    writer.add_text("experiment/config", f"```json\n{json.dumps(asdict(config), default=str, indent=2)}\n```")
-    return writer
+    path.mkdir(parents=True, exist_ok=True)
+    serializable_config = json.loads(json.dumps(asdict(config), default=str))
+    run = swanlab.init(
+        project=os.environ.get(
+            "SWANLAB_PROJ_NAME", "carbon-aware-storage-planning"
+        ),
+        experiment_name=experiment_name,
+        group=group,
+        config=serializable_config,
+        logdir=str(path),
+        mode=os.environ.get("SWANLAB_MODE") or None,
+        reinit=True,
+    )
+    return _SwanLabWriter(run)
 
 
 def _compact_run_name(prefix: str, tag: str, max_length: int = 40) -> str:
-    """Keep TensorBoard event paths below the Windows legacy path limit."""
+    """Keep experiment and artifact names compact on every platform."""
 
     candidate = f"{prefix}_{tag}"
     if len(candidate) <= max_length:
@@ -370,7 +398,7 @@ def load_generator(
 def train_generator_stage(
     config_path: str | Path,
     *,
-    tensorboard: bool = True,
+    swanlab_logging: bool = True,
     generator_override: str | None = None,
     resume_checkpoint: str | Path | None = None,
     additional_epochs: int | None = None,
@@ -427,7 +455,13 @@ def train_generator_stage(
             f"{config.cvae.epochs} additional epochs.",
             flush=True,
         )
-    writer = _summary_writer(paths.tensorboard / kind, tensorboard, config)
+    writer = _swanlab_writer(
+        paths.swanlab / kind,
+        swanlab_logging,
+        config,
+        experiment_name=_compact_run_name("generator", kind),
+        group="generator",
+    )
     training_state: dict = {}
     try:
         history = train_generator(
@@ -501,14 +535,14 @@ def train_generator_stage(
 def train_cvae_stage(
     config_path: str | Path,
     *,
-    tensorboard: bool = True,
+    swanlab_logging: bool = True,
     generator_override: str | None = None,
 ) -> dict:
     """Backward-compatible alias for :func:`train_generator_stage`."""
 
     return train_generator_stage(
         config_path,
-        tensorboard=tensorboard,
+        swanlab_logging=swanlab_logging,
         generator_override=generator_override,
     )
 
@@ -542,7 +576,7 @@ def _method_tag(config: ExperimentConfig) -> str:
 def train_dfl_stage(
     config_path: str | Path,
     *,
-    tensorboard: bool = True,
+    swanlab_logging: bool = True,
     method_override: str | None = None,
     generator_override: str | None = None,
     battery_capex_scale: float | None = None,
@@ -652,8 +686,12 @@ def train_dfl_stage(
     validation_oracle = make_planning_oracle(
         feeder, config.planning, config.costs, config.data, config.data_center
     )
-    writer = _summary_writer(
-        run_dir / "tensorboard", tensorboard, config, timestamped=False
+    writer = _swanlab_writer(
+        run_dir / "swanlab",
+        swanlab_logging,
+        config,
+        experiment_name=_compact_run_name("dfl", run_id),
+        group="dfl",
     )
     try:
         result = train_recourse_feasibility_cvae(
@@ -698,6 +736,7 @@ def train_dfl_stage(
         "best_epoch": int(result.best_epoch),
         "initialize_from_pretrained": config.dfl.initialize_from_pretrained,
         "carbon_formulation": config.planning.carbon_formulation,
+        "carbon_cap_scope": config.planning.carbon_cap_scope,
         "fixed_decision_anchors": config.dfl.fixed_decision_anchors,
         "dfl_statistical_weight": config.dfl.dfl_statistical_weight,
         "gradient_balance_ratio": config.dfl.gradient_balance_ratio,
@@ -731,6 +770,8 @@ def train_dfl_stage(
         # searched different landscapes even with everything else identical.
         "training_relative_gap": float(training_planning.solver_relative_gap),
         "planning_oracle": "single_pcc",
+        "carbon_formulation": config.planning.carbon_formulation,
+        "carbon_cap_scope": config.planning.carbon_cap_scope,
         "battery_capex_scale": float(config.costs.battery_capex_scale),
         "scenario_weights": list(result.scenario_weights),
         "support_source_names": checkpoint["support_source_names"],

@@ -1,0 +1,30 @@
+# Fast planning-only sensitivity: fixed learned K=8 support, two hourly carbon
+# formulations, 1000 $/tCO2 violation penalty, and 50 common test scenarios.
+base_config: configs/dataset_v2_dfl_hourly_layered_k8_reliability_cpu14600_32gb.yaml
+
+output_dir: outputs/ablations/carbon_accounting_hourly_penalty1000_k8_5600x_16gb
+test_scenarios: 50
+
+costs:
+  carbon_excess_dollars_per_t: 1000.0
+
+compute:
+  solver_workers: 4
+  solver_threads: 2
+  solver_memory_limit_mb: 2800
+
+common_evaluation:
+  carbon_formulation: layered_pcc
+  carbon_cap_scope: hourly
+  include_no_storage_reference: true
+  violation_tolerance_t_per_hour: 1.0e-8
+
+variants:
+  - id: layered_hourly
+    label: Layered-Hourly
+    carbon_formulation: layered_pcc
+    carbon_cap_scope: hourly
+  - id: average_hourly
+    label: Mixed-Hourly
+    carbon_formulation: average_pcc
+    carbon_cap_scope: hourly

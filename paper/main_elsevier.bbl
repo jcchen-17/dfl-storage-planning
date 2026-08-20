@@ -1,0 +1,37 @@
+\begin{thebibliography}{1}
+\expandafter\ifx\csname url\endcsname\relax
+  \def\url#1{\texttt{#1}}\fi
+\expandafter\ifx\csname urlprefix\endcsname\relax\def\urlprefix{URL }\fi
+\expandafter\ifx\csname href\endcsname\relax
+  \def\href#1#2{#2} \def\path#1{#1}\fi
+
+\bibitem{chen2025copf}
+X.~Chen, A.~Sun, W.~Shi, N.~Li, Carbon-aware optimal power flow, IEEE
+  Transactions on Power Systems 40~(4) (2025) 3090--3104.
+
+\bibitem{Dupacova2003}
+J.~Dupa\v{c}ov\'{a}, N.~Gr\"owe-Kuska, W.~R\"omisch, Scenario reduction in
+  stochastic programming: An approach using probability metrics, Mathematical
+  Programming 95~(3) (2003) 493--511.
+\newblock \href {https://doi.org/10.1007/s10107-002-0331-0}
+  {\path{doi:10.1007/s10107-002-0331-0}}.
+
+\bibitem{Wilder2019}
+B.~Wilder, B.~Dilkina, M.~Tambe, Melding the data-decisions pipeline:
+  Decision-focused learning for combinatorial optimization, in: Proceedings of
+  the AAAI Conference on Artificial Intelligence, Vol.~33, 2019, pp.
+  1658--1665.
+\newblock \href {https://doi.org/10.1609/aaai.v33i01.33011658}
+  {\path{doi:10.1609/aaai.v33i01.33011658}}.
+
+\bibitem{Mandi2025}
+J.~Mandi, M.~Defresne, S.~Berden, T.~Guns, Feasibility-aware decision-focused
+  learning for predicting parameters in the constraints, in: Advances in Neural
+  Information Processing Systems, Vol.~38, 2025.
+
+\bibitem{Sohn2015}
+K.~Sohn, H.~Lee, X.~Yan, Learning structured output representation using deep
+  conditional generative models, in: Advances in Neural Information Processing
+  Systems, Vol.~28, 2015, pp. 3483--3491.
+
+\end{thebibliography}

@@ -10,18 +10,18 @@ from storage_dfl.stages import evaluate_stage, train_dfl_stage, train_generator_
 def run(
     config_path: str | Path,
     *,
-    tensorboard: bool = True,
+    swanlab_logging: bool = True,
     generator: str | None = None,
 ) -> dict:
     trained = train_generator_stage(
-        config_path, tensorboard=tensorboard, generator_override=generator
+        config_path, swanlab_logging=swanlab_logging, generator_override=generator
     )
     print(
         f"{trained['generator']} complete: "
         f"loss {trained['initial_loss']:.6f} -> {trained['final_loss']:.6f}"
     )
     dfl = train_dfl_stage(
-        config_path, tensorboard=tensorboard, generator_override=generator
+        config_path, swanlab_logging=swanlab_logging, generator_override=generator
     )
     print(f"DFL complete: weights {dfl['scenario_weights']}")
     result = evaluate_stage(config_path, generator_override=generator)
@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="configs/dataset_v2_dfl_hourly_layered_t1.yaml",
         help="YAML configuration path",
     )
-    parser.add_argument("--no-tensorboard", action="store_true", help="Disable TensorBoard logging")
+    parser.add_argument("--no-swanlab", action="store_true", help="Disable SwanLab logging")
     parser.add_argument(
         "--generator",
         choices=GENERATOR_KINDS,
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    run(args.config, tensorboard=not args.no_tensorboard, generator=args.generator)
+    run(args.config, swanlab_logging=not args.no_swanlab, generator=args.generator)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ dependencies = [
   "openpyxl>=3.1",
   "PyYAML>=6.0",
   "torch>=2.2",
-  "tensorboard>=2.15",
+  "swanlab>=0.6",
   "PySCIPOpt>=6.0",
 ]
 

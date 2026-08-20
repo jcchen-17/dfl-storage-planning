@@ -1,0 +1,41 @@
+# Carbon-accounting and carbon-cap-scope ablation.
+#
+# The trained Full-DFL K=8 checkpoint supplies one fixed generated support.
+# Every variant replans storage on that identical support.  The resulting four
+# designs are then cross-evaluated on the same historical test scenarios using
+# the strict layered-PCC/hourly model below; no generator retraining is needed.
+base_config: configs/dataset_v2_dfl_hourly_layered_k8_reliability_cpu14600_32gb.yaml
+
+output_dir: outputs/ablations/carbon_accounting_k8_cpu14600_32gb
+test_scenarios: 182
+
+# Safe defaults for an i7-14600-class 20-thread CPU with 32 GB RAM. Variants run
+# sequentially; each fixed-design test evaluation fans out over four workers.
+compute:
+  solver_workers: 4
+  solver_threads: 4
+  solver_memory_limit_mb: 5000
+
+common_evaluation:
+  carbon_formulation: layered_pcc
+  carbon_cap_scope: hourly
+  include_no_storage_reference: true
+  violation_tolerance_t_per_hour: 1.0e-8
+
+variants:
+  - id: layered_hourly
+    label: Layered-Hourly
+    carbon_formulation: layered_pcc
+    carbon_cap_scope: hourly
+  - id: layered_horizon
+    label: Layered-Horizon
+    carbon_formulation: layered_pcc
+    carbon_cap_scope: horizon
+  - id: average_hourly
+    label: Mixed-Hourly
+    carbon_formulation: average_pcc
+    carbon_cap_scope: hourly
+  - id: average_horizon
+    label: Mixed-Horizon
+    carbon_formulation: average_pcc
+    carbon_cap_scope: horizon

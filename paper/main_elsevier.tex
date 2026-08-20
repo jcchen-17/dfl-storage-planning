@@ -7,6 +7,7 @@
 \usepackage{algorithm}
 \usepackage[noend]{algpseudocode}
 \usepackage{booktabs,enumitem}
+\usepackage{xcolor}
 \usepackage{xurl}
 \usepackage[colorlinks=true,citecolor=blue,linkcolor=blue,urlcolor=blue]{hyperref}
 \makeatletter
@@ -235,6 +236,18 @@ Section~\ref{sec:methodology} presents the decision-focused methodology.
 Section~\ref{sec:case} describes the case study, and
 Section~\ref{sec:conclusion} concludes the paper.
 
+% TODO: Revisit the highlighted DFL positioning paragraph before submission;
+% integrate it into the Introduction and remove the highlighting.
+\noindent\colorbox{yellow!20}{%
+\parbox{\dimexpr\linewidth-2\fboxsep\relax}{%
+Conventional decision-focused learning primarily aligns predictions with the
+quality of the resulting optimization objective. When the learned quantities
+parameterize constraints, however, objective quality alone is insufficient. We
+further require the design induced by the generated scenarios to remain
+feasible under realized operation, without making the learned support so
+conservative that it excludes high-quality designs.%
+}}
+
 % =====================================================================
 \section{Carbon-Aware Storage Planning Formulation}
 \label{sec:formulation}
@@ -244,7 +257,7 @@ Section~\ref{sec:conclusion} concludes the paper.
 Consider a \emph{carbon-aware storage planning} (CASP) problem for a
 grid-connected data center subject to an operational carbon-intensity limit.
 The CASP is formulated as a two-stage stochastic program. The first stage
-optimizes the battery investment, i.e., whether to install a battery and its
+optimizes the storage investment, i.e., the installation decision and its
 power and energy ratings. For each scenario
 $s\in\mathcal S=\{1,\ldots,S\}$, the second stage optimizes system operation
 over the operating horizon $\mathcal T=\{1,\ldots,T\}$, subject to load-service

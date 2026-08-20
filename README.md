@@ -50,8 +50,17 @@ Artifacts are grouped by experiment config. The four hourly layered
 configurations write to `outputs/hourly_layered/t1/` through `t4/`. Every DFL
 launch creates one self-contained `runs/YYYYMMDD-HHMMSS/` directory containing
 `config.json`, `checkpoint.pt`, `history.json`, `result.json`, and its own
-`tensorboard/` events. Evaluation files are written beside that checkpoint,
+`swanlab/` logs. Training metrics are synchronized to the
+`carbon-aware-storage-planning` SwanLab project by default. Evaluation files are written beside that checkpoint,
 while `latest.json` points to the most recently completed run.
+
+Log in once before the first online run, or set `SWANLAB_MODE=offline` when a
+machine has no network access:
+
+```powershell
+swanlab login
+$env:SWANLAB_MODE = "offline"  # optional
+```
 
 Compare the learned supports against scenarios selected directly from the
 observed training library:

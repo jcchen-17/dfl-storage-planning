@@ -9,7 +9,7 @@ def main() -> None:
         description="Train the current v2 CVAE scenario generator."
     )
     parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered_t1.yaml")
-    parser.add_argument("--no-tensorboard", action="store_true")
+    parser.add_argument("--no-swanlab", action="store_true")
     parser.add_argument(
         "--resume-checkpoint",
         type=Path,
@@ -26,7 +26,7 @@ def main() -> None:
     print(f"Starting generator training with {args.config}...", flush=True)
     result = train_generator_stage(
         args.config,
-        tensorboard=not args.no_tensorboard,
+        swanlab_logging=not args.no_swanlab,
         resume_checkpoint=args.resume_checkpoint,
         additional_epochs=args.additional_epochs,
     )

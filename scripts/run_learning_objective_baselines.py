@@ -128,7 +128,7 @@ def _run_job(
     *,
     project_root: Path,
     skip_evaluation: bool,
-    no_tensorboard: bool,
+    no_swanlab: bool,
 ) -> dict:
     """Run one isolated train/evaluate pair and return its summary record."""
 
@@ -142,8 +142,8 @@ def _run_job(
         "--config",
         str(config_path),
     ]
-    if no_tensorboard:
-        train_command.append("--no-tensorboard")
+    if no_swanlab:
+        train_command.append("--no-swanlab")
 
     with log_path.open("w", encoding="utf-8") as log:
         continuation_epochs = int(job.get("cvae_continuation_epochs", 0))
@@ -158,8 +158,8 @@ def _run_job(
                 "--additional-epochs",
                 str(continuation_epochs),
             ]
-            if no_tensorboard:
-                continuation_command.append("--no-tensorboard")
+            if no_swanlab:
+                continuation_command.append("--no-swanlab")
             log.write(
                 "CVAE CONTINUATION COMMAND\n"
                 + subprocess.list2cmdline(continuation_command)
@@ -241,7 +241,7 @@ def _run_pretraining_job(
     job: dict,
     *,
     project_root: Path,
-    no_tensorboard: bool,
+    no_swanlab: bool,
 ) -> dict:
     """Train the single shared CVAE checkpoint used by one seed."""
 
@@ -255,8 +255,8 @@ def _run_pretraining_job(
         "--config",
         str(config_path),
     ]
-    if no_tensorboard:
-        command.append("--no-tensorboard")
+    if no_swanlab:
+        command.append("--no-swanlab")
     with log_path.open("w", encoding="utf-8") as log:
         log.write("PRETRAIN COMMAND\n" + subprocess.list2cmdline(command) + "\n\n")
         log.flush()
@@ -312,7 +312,7 @@ def main() -> None:
         default=None,
         help=(
             "short output-directory label; defaults to the config filename. "
-            "Use this on Windows when TensorBoard event paths would be too long"
+            "Use this to keep Windows artifact paths compact"
         ),
     )
     parser.add_argument(
@@ -353,7 +353,7 @@ def main() -> None:
         help="override solver_threads for each concurrent run",
     )
     parser.add_argument("--skip-evaluation", action="store_true")
-    parser.add_argument("--no-tensorboard", action="store_true")
+    parser.add_argument("--no-swanlab", action="store_true")
     parser.add_argument(
         "--continue-on-error",
         action="store_true",
@@ -504,7 +504,7 @@ def main() -> None:
                 _run_pretraining_job,
                 job,
                 project_root=project_root,
-                no_tensorboard=args.no_tensorboard,
+                no_swanlab=args.no_swanlab,
             ): index
             for index, job in enumerate(pretraining_jobs)
         }
@@ -555,7 +555,7 @@ def main() -> None:
                 job,
                 project_root=project_root,
                 skip_evaluation=args.skip_evaluation,
-                no_tensorboard=args.no_tensorboard,
+                no_swanlab=args.no_swanlab,
             ): index
             for job in runnable_jobs
             for index in [jobs.index(job)]

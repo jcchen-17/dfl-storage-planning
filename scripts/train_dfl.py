@@ -6,7 +6,7 @@ from storage_dfl.stages import train_dfl_stage
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train decision-focused scenario supports.")
     parser.add_argument("--config", default="configs/dataset_v2_dfl_hourly_layered_t1.yaml")
-    parser.add_argument("--no-tensorboard", action="store_true")
+    parser.add_argument("--no-swanlab", action="store_true")
     parser.add_argument(
         "--carbon-formulation",
         choices=("layered_pcc", "average_pcc"),
@@ -43,7 +43,7 @@ def main() -> None:
     print(f"Starting DFL training with {args.config}...", flush=True)
     result = train_dfl_stage(
         args.config,
-        tensorboard=not args.no_tensorboard,
+        swanlab_logging=not args.no_swanlab,
         method_override=args.method,
         battery_capex_scale=args.capex_scale,
         carbon_formulation_override=args.carbon_formulation,
