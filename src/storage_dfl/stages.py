@@ -1254,18 +1254,18 @@ def evaluate_stage(
             evaluation_planning.solver_relative_gap,
         )
     )
-    perfect_information = None
+    perfect_information_result = None
     exact_decision_regret = None
     if perfect_information and checkpoint.get("method") == "recourse_feasibility":
         print("Perfect-information reference: solving the true scenario MILP...", flush=True)
-        perfect_information = oracle.solve(
+        perfect_information_result = oracle.solve(
             evaluation_pool.scenarios,
             weights=evaluation_weights,
             allow_carbon_slack=True,
             use_cache=True,
         )
         exact_decision_regret = normalized_decision_regret(
-            validation, perfect_information
+            validation, perfect_information_result
         )
     payload = {
         "method": checkpoint.get("method", "recourse_feasibility"),
@@ -1318,7 +1318,9 @@ def evaluate_stage(
         ],
         "out_of_sample_wall_seconds": validation_wall_seconds,
         "perfect_information_reference": (
-            perfect_information.to_dict() if perfect_information is not None else None
+            perfect_information_result.to_dict()
+            if perfect_information_result is not None
+            else None
         ),
         "decision_regret": exact_decision_regret,
     }
